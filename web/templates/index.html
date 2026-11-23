@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClipForge Studio — Powered by PeakCut Architecture</title>
+<link rel="icon" type="image/svg+xml" href="/brand/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Inter:wght@300;400;600&family=Archivo+Black&family=Anton&family=Poppins:wght@700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/style.css?v=3.0">
+</head>
+<body>
+<div class="app" id="app">
+  <!-- Left Espresso Dark Navigation Rail (240px) -->
+  <aside class="side" aria-label="Sidebar">
+    <div class="side-head">
+      <a href="/" class="logo-wrap" data-act="go" data-v="overview">
+        <span class="logo-icon">⚡</span>
+        <span class="logo-text">ClipForge <span>AI</span></span>
+      </a>
+      <img class="mark" src="/brand/favicon.svg" alt="ClipForge">
+      <button class="icon-btn collapse" data-act="collapse" id="collapseBtn" aria-label="Collapse sidebar" title="Collapse sidebar"></button>
+    </div>
+    <nav class="nav" id="nav" aria-label="Main Navigation"></nav>
+    <div class="side-foot" id="foot"></div>
+  </aside>
+
+  <!-- Main Canvas (Crisp Elevated Surface) -->
+  <main id="main">
+    <header class="topbar">
+      <button class="icon-btn menu" data-act="menu" id="menuBtn" aria-label="Open menu"></button>
+      <span id="tpic"></span>
+      <div class="titles">
+        <h1 id="title"><span>All videos</span></h1>
+        <p id="subtitle">Every video and recording, across all creators.</p>
+      </div>
+      <nav class="utabs" id="utabs" role="tablist" aria-label="Creator sections"></nav>
+      <div class="row" id="actions"></div>
+    </header>
+
+    <div id="vbanner"></div>
+    <div id="heroSlot"></div>
+    <div class="content" id="view"></div>
+  </main>
+</div>
+
+<!-- Mobile Drawer Backdrop Scrim -->
+<div class="scrim" data-act="menu"></div>
+
+<!-- PeakCut Two-Column Clip Editor Dialog -->
+<dialog id="clipdlg"></dialog>
+
+<!-- Generic Form & Confirmation Dialog -->
+<dialog id="formdlg"></dialog>
+
+<!-- Hidden Direct Upload Input -->
+<input type="file" id="file" accept="video/*" multiple hidden>
+
+<!-- Floating Toast Notifications -->
+<div id="toasts" role="status" aria-live="polite"></div>
+
+<!-- Slide-Out Notification Bell Popover -->
+<div class="pop" id="bellpop" role="dialog" aria-label="Notifications" hidden></div>
+
+<!-- User Settings Popover Menu -->
+<div class="pop menu" id="acctpop" role="menu" hidden></div>
+
+<!-- Floating Multi-Selection Action Toolbar -->
+<div id="selbar" role="toolbar" aria-label="Selected items"></div>
+
+<!-- Gradient ASCII Background Engine -->
+<script src="/static/gradient-ascii.js"></script>
+<!-- PeakCut + ClipForge Reactive Application Engine -->
+<script src="/static/js/app.js?v=3.0"></script>
+</body>
+</html>

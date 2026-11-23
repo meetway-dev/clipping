@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+
+# IDE and editor files
+.vscode/
+.idea/
+*.code-workspace
+
+# Logs and databases
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# Runtime storage, with required application assets kept in source control
+storage/*
+!storage/assets/
+!storage/models/
+
+# OS metadata
+.DS_Store
+Thumbs.db
