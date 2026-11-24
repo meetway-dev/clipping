@@ -26,8 +26,9 @@ class OllamaManager:
     def __init__(self):
         self.base_url = DEFAULT_CONFIG.get("ollama_url", "http://127.0.0.1:11434")
         self.preferred_models = [
-            "llama3.2:latest", "llama3.2", "llama3.2:3b", "llama3.2:1b",
-            "qwen2.5-coder:3b", "qwen2.5-coder:7b", "deepseek-coder:6.7b", "qwen-coder-pro:latest"
+            "qwen2.5:7b", "qwen2.5:14b", "qwen2.5:3b", "qwen2.5:1.5b",
+            "llama3.2:3b", "llama3.2:latest", "llama3.2",
+            "qwen2.5-coder:7b", "deepseek-coder:6.7b"
         ]
 
     @classmethod
@@ -128,7 +129,7 @@ class OllamaManager:
         }
 
     def _select_best_model(self, available: List[str]) -> str:
-        """Selects the best available model, preferring LLaMA 3.2 or Qwen 2.5 Coder."""
+        """Selects the strongest available general-purpose model for topic analysis."""
         for pref in self.preferred_models:
             for name in available:
                 if name == pref or name.startswith(pref):
@@ -188,7 +189,7 @@ class OllamaManager:
         llm_resp = self.generate(
             prompt=prompt,
             system_prompt="You are a JSON-only API that summarizes podcasts into viral topic briefs.",
-            timeout=25.0
+            timeout=45.0
         )
 
         if llm_resp:
@@ -197,6 +198,26 @@ class OllamaManager:
                 clean = llm_resp.replace("```json", "").replace("```", "").strip()
                 parsed = json.loads(clean)
                 if "overview" in parsed and "key_takeaways" in parsed:
+                    takeaways = parsed.get("key_takeaways")
+                    if not isinstance(takeaways, list):
+                        takeaways = []
+                    fallback_takeaways = [
+                        "Prioritize the primary constraint before trying to scale.",
+                        "Use clear examples and personal stakes to keep the audience engaged.",
+                        "Turn the key lesson into one concrete action.",
+                        "Remember the conclusion while applying the discussion to real decisions."
+                    ]
+                    parsed["key_takeaways"] = [
+                        str(t).strip()
+                        for t in takeaways
+                        if isinstance(t, (str, dict)) and str(t).strip()
+                    ]
+                    while len(parsed["key_takeaways"]) < 3:
+                        parsed["key_takeaways"].append(
+                            fallback_takeaways[len(parsed["key_takeaways"])]
+                        )
+                    if len(parsed["key_takeaways"]) > 4:
+                        parsed["key_takeaways"] = parsed["key_takeaways"][:4]
                     # Map start_pct to absolute timestamps
                     chapters = parsed.get("chapters", [])
                     for ch in chapters:
@@ -223,34 +244,49 @@ class OllamaManager:
             f"Topic: {topic_title or 'Podcast Highlight'}\n"
             f"Transcript snippet:\n{transcript[:1500]}\n\n"
             f"Generate 5 high-converting vertical video hook headlines that stop viewers from scrolling within 2 seconds.\n"
+            f"The headline should be engaging, multi-word (6 to 12 words), and crafted to fit beautifully into 2-3 lines across the spacious top safe-area banner.\n"
             f"Respond with ONLY a valid JSON array of 5 objects matching this schema:\n"
             f"[\n"
-            f'  {{"type": "Curiosity Gap", "hook": "Headline text here (max 8 words) 🤯", "style": "curiosity"}},\n'
-            f'  {{"type": "Controversial / Warning", "hook": "Headline text here (max 8 words) ⚠️", "style": "warning"}},\n'
-            f'  {{"type": "Direct Question", "hook": "Headline text here (max 8 words) ❓", "style": "question"}},\n'
-            f'  {{"type": "Bold Claim", "hook": "Headline text here (max 8 words) 💰", "style": "bold"}},\n'
-            f'  {{"type": "Actionable Insight", "hook": "Headline text here (max 8 words) 🚀", "style": "action"}}\n'
+            f'  {{"type": "Curiosity Gap", "hook": "Engaging curiosity hook (6 to 12 words) 🤯", "style": "curiosity"}},\n'
+            f'  {{"type": "Controversial / Warning", "hook": "High-urgency warning hook (6 to 12 words) ⚠️", "style": "warning"}},\n'
+            f'  {{"type": "Direct Question", "hook": "Thought-provoking question (6 to 12 words) ❓", "style": "question"}},\n'
+            f'  {{"type": "Bold Claim", "hook": "Powerful counter-intuitive claim (6 to 12 words) 💰", "style": "bold"}},\n'
+            f'  {{"type": "Actionable Insight", "hook": "High-value framework or blueprint (6 to 12 words) 🚀", "style": "action"}}\n'
             f"]"
         )
 
-        resp = self.generate(prompt=prompt, system_prompt="You are a JSON-only API that writes viral short-form hooks.", timeout=15.0)
+        resp = self.generate(prompt=prompt, system_prompt="You are a JSON-only API that writes viral short-form hooks.", timeout=30.0)
         if resp:
             try:
                 clean = resp.replace("```json", "").replace("```", "").strip()
                 parsed = json.loads(clean)
                 if isinstance(parsed, list) and len(parsed) >= 3:
-                    return parsed[:5]
+                    normalized = []
+                    styles = ["curiosity", "warning", "question", "bold", "action"]
+                    types = ["Curiosity Gap", "Controversial / Warning", "Direct Question", "Bold Claim", "Actionable Insight"]
+                    for i, item in enumerate(parsed[:5]):
+                        if not isinstance(item, dict):
+                            continue
+                        hook = str(item.get("hook", "")).strip()
+                        if hook:
+                            normalized.append({
+                                "type": str(item.get("type", types[i if i < len(types) else 0])).strip(),
+                                "hook": hook,
+                                "style": str(item.get("style", styles[i if i < len(styles) else 0])).strip()
+                            })
+                    if len(normalized) >= 3:
+                        return normalized
             except Exception:
                 pass
 
-        # Heuristic fallback based on keywords and topic
+        # Heuristic fallback based on keywords and topic (6 to 12 words)
         clean_title = (topic_title or "THIS MOMENT").strip().title()
         return [
-            {"type": "Curiosity Gap", "hook": f"The 1 Truth About {clean_title} Nobody Tells You 🤯", "style": "curiosity"},
-            {"type": "Controversial / Warning", "hook": f"Stop Making This Costly {clean_title} Mistake ⚠️", "style": "warning"},
-            {"type": "Direct Question", "hook": f"Why Is Everyone Getting {clean_title} Wrong? ❓", "style": "question"},
-            {"type": "Bold Claim", "hook": f"This Simple Shift Changes {clean_title} Forever 💰", "style": "bold"},
-            {"type": "Actionable Insight", "hook": f"How To Master {clean_title} In 30 Seconds 🚀", "style": "action"}
+            {"type": "Curiosity Gap", "hook": f"The Untold Truth About {clean_title} Nobody Talks About 🤯", "style": "curiosity"},
+            {"type": "Controversial / Warning", "hook": f"Stop Making This Costly {clean_title} Mistake Before It's Too Late ⚠️", "style": "warning"},
+            {"type": "Direct Question", "hook": f"Why Do 99% Of People Get {clean_title} Completely Wrong? ❓", "style": "question"},
+            {"type": "Bold Claim", "hook": f"This Simple 60-Second Shift In {clean_title} Changes Everything 💰", "style": "bold"},
+            {"type": "Actionable Insight", "hook": f"The Exact Step-By-Step Blueprint To Master {clean_title} 🚀", "style": "action"}
         ]
 
     def translate_transcript(self, transcript: str, target_lang: str = "es") -> Dict[str, Any]:
@@ -284,6 +320,9 @@ class OllamaManager:
                 clean = resp.replace("```json", "").replace("```", "").strip()
                 parsed = json.loads(clean)
                 if "translated_text" in parsed:
+                    parsed["language"] = target_name
+                    if not str(parsed.get("suggested_title", "")).strip():
+                        parsed["suggested_title"] = f"[{target_lang.upper()}] {parsed['translated_text'][:30]}..."
                     return parsed
             except Exception:
                 pass

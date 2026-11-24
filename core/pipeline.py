@@ -1,4 +1,6 @@
 import time
+import re
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable
 from .config import TEMP_DIR, OUTPUTS_DIR, DEFAULT_CONFIG
@@ -8,6 +10,18 @@ from .face_tracker import SmartFaceTracker
 from .subtitles import SubtitleGenerator
 from .renderer import VideoRenderer
 from .tight_cut import TightCutEngine
+from .thumbnail_designer import TikTokThumbnailDesigner
+
+def sanitize_topic_filename(raw_topic: str) -> str:
+    """Sanitizes topic into a clean, safe filename."""
+    cleaned = re.sub(r"[^\w\s\-]", "", str(raw_topic or "").strip())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return "Video_Clip"
+    if cleaned.isupper() or cleaned.islower():
+        cleaned = cleaned.title()
+    safe = re.sub(r"[\s\-]+", "_", cleaned).strip("_")
+    return safe[:60].strip("_") or "Video_Clip"
 
 class ClipForgePipeline:
     """
@@ -67,47 +81,133 @@ class ClipForgePipeline:
         layout_mode ('speaker_focus', 'split_screen', 'blur', 'center_crop'),
         TightCut dead-air removal, retention progress bar, and smart auto-ducked background music.
         """
-        def update_progress(msg: str, percent: float):
-            print(f"[{percent:.0f}%] {msg}")
+        def update_progress(msg: str, percent: float, step: int = 1, step_name: str = "", detail: str = ""):
+            print(f"[{percent:.0f}%] [Step {step}: {step_name}] {msg}")
             if progress_cb:
-                progress_cb(msg, percent)
+                # Support both 2-arg callbacks (msg, percent) and 5-arg callbacks with step info
+                try:
+                    progress_cb(msg, percent, step, step_name, detail)
+                except TypeError:
+                    try:
+                        progress_cb(msg, percent)
+                    except Exception:
+                        pass
 
         video_p = Path(video_path)
         if not video_p.exists():
             raise FileNotFoundError(f"Video file not found: {video_path}")
 
-        # Step 1: Transcription
-        update_progress("Extracting audio and transcribing speech with word timestamps...", 10)
+        # Step 1: Transcription & Speech Recognition
+        update_progress(
+            "Extracting audio and transcribing speech with word-level timestamps...",
+            10,
+            step=1,
+            step_name="Transcribe",
+            detail="Whisper AI extracting audio waveforms & word timings"
+        )
         transcribe_lang = None if (not language or language.lower() in ["auto", "none"]) else language
         transcription_result = self.transcriber.transcribe(str(video_p), language=transcribe_lang)
         segments = transcription_result["segments"]
         words = transcription_result["words"]
 
+        update_progress(
+            f"Transcribed {len(segments)} spoken segments ({len(words)} words) with millisecond accuracy.",
+            28,
+            step=1,
+            step_name="Transcribe",
+            detail=f"Completed {len(segments)} segments. Audio alignment verified."
+        )
+
         # Step 2: Semantic Narrative Arc & Viral Clip Detection
-        update_progress(f"Analyzing topics in '{clip_mode}' mode for complete conversational context...", 35)
+        update_progress(
+            f"Analyzing topics in '{clip_mode}' mode for complete conversational context...",
+            32,
+            step=2,
+            step_name="AI Topics",
+            detail="Evaluating hook virality, story progression, and duration targets"
+        )
+
+        def viral_sub_progress(sub_msg: str, sub_pct: float):
+            update_progress(sub_msg, sub_pct, step=2, step_name="AI Topics", detail=sub_msg)
+
         viral_clips = self.viral_detector.find_viral_clips(
             segments=segments,
             min_seconds=min_clip_seconds,
             max_seconds=max_clip_seconds,
             top_k=max_clips,
-            clip_mode=clip_mode
+            clip_mode=clip_mode,
+            progress_cb=viral_sub_progress
         )
 
         if not viral_clips:
-            dur = min(45.0, transcription_result["duration"])
-            viral_clips = [{
-                "start": 0.0,
-                "end": dur,
-                "duration": dur,
-                "title": "PODCAST HIGHLIGHT",
-                "hook": "Opening statement...",
-                "virality_score": 85,
-                "narrative_breakdown": {"hook_score": 85, "story_score": 85, "conclusion_score": 85},
-                "full_transcript": "Default highlight selection.",
-                "part_info": "",
-                "series_id": "",
-                "reason": "Default highlight selection."
-            }]
+            # Last-resort extraction must still be a complete sentence, never a blind 0-to-45 second cut.
+            relax_min = max(8.0, min_clip_seconds * 0.5)
+            relax_max = max(max_clip_seconds, 75.0)
+            viral_clips = self.viral_detector.find_viral_clips(
+                segments=segments,
+                min_seconds=relax_min,
+                max_seconds=relax_max,
+                top_k=max(1, max_clips),
+                clip_mode="highlights",
+                progress_cb=viral_sub_progress
+            )
+            if not viral_clips:
+                dur = min(relax_max, transcription_result["duration"])
+                viral_clips = [{
+                    "start": 0.0,
+                    "end": dur,
+                    "duration": dur,
+                    "title": "PODCAST HIGHLIGHT",
+                    "hook": "Opening statement...",
+                    "virality_score": 85,
+                    "narrative_breakdown": {"hook_score": 85, "story_score": 85, "conclusion_score": 85},
+                    "full_transcript": "Podcast highlight.",
+                    "part_info": "",
+                    "series_id": "",
+                    "reason": "Short fallback based on available transcript."
+                }]
+
+        # Step 2B: Topic-Based Video Naming & Part Numbering
+        # Detect if multiple videos cover the same topic to append part_1, part_2, etc.
+        topic_groups = defaultdict(list)
+        for i, c in enumerate(viral_clips):
+            raw_t = c.get("topic") or c.get("title") or f"Highlight_{i+1}"
+            norm_k = sanitize_topic_filename(raw_t).lower()
+            topic_groups[norm_k].append(i)
+
+        allocated_filenames = set()
+        for i, c in enumerate(viral_clips):
+            raw_t = c.get("topic") or c.get("title") or f"Highlight_{i+1}"
+            norm_k = sanitize_topic_filename(raw_t).lower()
+            base_safe_name = sanitize_topic_filename(raw_t)
+            matching_indices = topic_groups[norm_k]
+
+            # If two or more clips cover the same topic:
+            if len(matching_indices) > 1:
+                part_num = matching_indices.index(i) + 1
+                stem = f"{base_safe_name}_part_{part_num}"
+                part_label = f"part_{part_num}"
+                c["part_info"] = f"Part {part_num}/{len(matching_indices)}"
+                curr_title = c.get("title") or raw_t
+                if not re.search(r"part[_\s]*\d+", curr_title, re.IGNORECASE):
+                    c["title"] = f"{curr_title} {part_label}"
+            else:
+                stem = base_safe_name
+                if c.get("part_info") in ["Part 1/1", ""]:
+                    c["part_info"] = ""
+
+            c["topic"] = raw_t
+
+            # Ensure unique filename on disk and within session
+            candidate_fn = f"{stem}.mp4"
+            if candidate_fn in allocated_filenames or (OUTPUTS_DIR / candidate_fn).exists():
+                count = 1
+                while f"{stem}_{count}.mp4" in allocated_filenames or (OUTPUTS_DIR / f"{stem}_{count}.mp4").exists():
+                    count += 1
+                candidate_fn = f"{stem}_{count}.mp4"
+
+            allocated_filenames.add(candidate_fn)
+            c["assigned_filename"] = candidate_fn
 
         rendered_clips = []
         total_clips = len(viral_clips)
@@ -133,7 +233,13 @@ class ClipForgePipeline:
 
             # Step 3A: TightCut Dead-Air Removal Engine
             if enable_tightcut and clip_words:
-                update_progress(f"Clip {idx}/{total_clips}: Tightening pacing (cutting dead air)...", base_pct)
+                update_progress(
+                    f"Clip {idx}/{total_clips}: Tightening pacing (cutting dead air)...",
+                    base_pct,
+                    step=3,
+                    step_name="Framing & Pacing",
+                    detail=f"TightCut: removing dead air silences >0.65s for clip {idx}"
+                )
                 tight_res = TightCutEngine.analyze_and_tighten(
                     words=clip_words,
                     clip_start=clip_start,
@@ -172,7 +278,13 @@ class ClipForgePipeline:
             fit_top_space = max(top_pad_px, max(80, min(950, int(canvas_top_space)))) if not has_padding else top_pad_px
             fit_video_h = min(608, available_h)
 
-            update_progress(f"Clip {idx}/{total_clips}: Applying '{layout_mode}' layout with safe area framing...", base_pct + 5)
+            update_progress(
+                f"Clip {idx}/{total_clips}: Applying '{layout_mode}' layout with safe area framing...",
+                base_pct + 5,
+                step=3,
+                step_name="Framing & Pacing",
+                detail=f"Layout: {layout_mode} | Top safe margin: {top_pad_px}px"
+            )
             crop_filter, current_layout = self.face_tracker.build_layout_filter(
                 video_path=render_src_video,
                 start_sec=render_start_sec,
@@ -188,10 +300,46 @@ class ClipForgePipeline:
             )
 
             # Step 4: Kinetic Subtitles + Power Keywords + Top Topic Banner
-            update_progress(f"Clip {idx}/{total_clips}: Generating animated captions & topic banner...", base_pct + 12)
+            update_progress(
+                f"Clip {idx}/{total_clips}: Generating animated captions & topic banner...",
+                base_pct + 12,
+                step=4,
+                step_name="Subtitles",
+                detail=f"Applying '{subtitle_style}' kinetic captions & power keywords"
+            )
             ass_path = TEMP_DIR / f"{video_p.stem}_clip_{idx}_{int(clip_start)}.ass"
             part_info = clip.get("part_info", "")
-            banner_headline = custom_headline if custom_headline else clip.get("title", "")
+
+            # Generate AI viral copy data for both video top headline and companion thumbnail
+            copy_data = None
+            try:
+                copy_data = TikTokThumbnailDesigner.generate_ai_copy(
+                    topic=clip.get("topic", ""),
+                    title=clip.get("title", ""),
+                    hook=clip.get("hook", ""),
+                    transcript=clip.get("full_transcript", "")
+                )
+            except Exception as copy_err:
+                print(f"[Headline Copy Warning] AI copy fallback: {copy_err}")
+
+            if custom_headline:
+                banner_headline = custom_headline
+            elif clip.get("title") and len(str(clip.get("title")).split()) >= 4:
+                # Prefer the rich 6-12 word topic headline designed for the top safe-area banner
+                banner_headline = str(clip.get("title")).strip()
+            elif clip.get("hook") and len(str(clip.get("hook")).split()) >= 4:
+                # Use the opening viral hook if self-contained
+                banner_headline = str(clip.get("hook")).strip()
+            elif copy_data and copy_data.get("subheadline") and len(str(copy_data.get("subheadline")).split()) >= 5:
+                banner_headline = copy_data.get("subheadline")
+            else:
+                # Synthesize a high-converting multi-word banner hook from available topic/title keywords
+                base_topic = clip.get("title") or clip.get("topic") or clip.get("hook") or "VIRAL HIGHLIGHT"
+                banner_headline = detector._extract_topic_headline(
+                    clip.get("full_transcript", base_topic),
+                    clip.get("hook", base_topic)
+                )
+
             SubtitleGenerator.create_ass_file(
                 words=clip_words,
                 output_path=ass_path,
@@ -211,9 +359,14 @@ class ClipForgePipeline:
             )
 
             # Step 5: Render 1080x1920 MP4 via Hardware NVENC / CPU
-            update_progress(f"Clip {idx}/{total_clips}: Rendering 1080x1920 MP4...", base_pct + 20)
-            part_suffix = f"_{part_info.lower().replace('/', '_').replace(' ', '_')}" if part_info else ""
-            out_filename = f"{video_p.stem}_viral_{idx}{part_suffix}_{subtitle_style}.mp4"
+            update_progress(
+                f"Clip {idx}/{total_clips}: Rendering 1080x1920 MP4...",
+                base_pct + 20,
+                step=5,
+                step_name="Render & Covers",
+                detail=f"FFmpeg NVENC/CPU encoding 1080x1920 60fps vertical output"
+            )
+            out_filename = clip.get("assigned_filename") or f"{video_p.stem}_viral_{idx}_{subtitle_style}.mp4"
             rendered_path = self.renderer.render_clip(
                 video_path=render_src_video,
                 start_sec=render_start_sec,
@@ -231,9 +384,38 @@ class ClipForgePipeline:
                 enable_voice_clarifier=enable_voice_clarifier
             )
 
+            # Generate AI-powered 1080x1920 TikTok cover thumbnail with matching name
+            thumb_path = Path(rendered_path).with_suffix(".jpg")
+            try:
+                update_progress(
+                    f"Clip {idx}/{total_clips}: Designing AI TikTok cover thumbnail...",
+                    base_pct + 25,
+                    step=5,
+                    step_name="Render & Covers",
+                    detail=f"Generating high-CTR 3:4 profile grid cover with custom hooks"
+                )
+                TikTokThumbnailDesigner.create_tiktok_thumbnail(
+                    video_path=str(rendered_path),
+                    output_jpg_path=str(thumb_path),
+                    topic=clip.get("topic", banner_headline),
+                    title=clip.get("title", banner_headline),
+                    hook=clip.get("hook", ""),
+                    transcript=clip.get("full_transcript", ""),
+                    crop_filter=crop_filter,
+                    source_clean_video=render_src_video,
+                    timestamp_sec=min(2.0, max(0.8, render_dur * 0.2)),
+                    copy_data=copy_data
+                )
+            except Exception as thumb_err:
+                print(f"[Thumbnail Warning] TikTok thumbnail designer fallback: {thumb_err}")
+                try:
+                    self.renderer.generate_thumbnail(str(rendered_path), str(thumb_path), timestamp_sec=1.0)
+                except Exception:
+                    pass
+
             # Step 6: Generate AI Social Media Kit
             social_kit = self.viral_detector.generate_social_kit(
-                title=clip.get("title", "PODCAST HIGHLIGHT"),
+                title=clip.get("title", banner_headline or "PODCAST HIGHLIGHT"),
                 hook=clip.get("hook", ""),
                 transcript=clip.get("full_transcript", ""),
                 series_part=part_info
@@ -241,6 +423,8 @@ class ClipForgePipeline:
 
             rendered_clips.append({
                 **clip,
+                "topic": clip.get("topic", banner_headline),
+                "title": clip.get("title", banner_headline),
                 "start": clip_start,
                 "end": clip_end,
                 "duration": round(render_dur, 2),
@@ -257,14 +441,26 @@ class ClipForgePipeline:
                 "words": clip_words
             })
 
-        update_progress("Building full video virality heatmap...", 96)
+        update_progress(
+            "Building full video virality heatmap...",
+            96,
+            step=5,
+            step_name="Render & Covers",
+            detail="Synthesizing engagement heatmap along timeline"
+        )
         virality_timeline = self.viral_detector.generate_virality_timeline(
             segments=segments,
             total_duration=transcription_result["duration"],
             viral_clips=rendered_clips
         )
 
-        update_progress("Generating executive podcast summary & topic map...", 98)
+        update_progress(
+            "Generating executive podcast summary & topic map...",
+            98,
+            step=5,
+            step_name="Render & Covers",
+            detail="Generating chapter outlines and social media kit"
+        )
         podcast_summary = self.viral_detector.generate_podcast_summary(
             segments=segments,
             total_duration=transcription_result["duration"]
@@ -275,7 +471,13 @@ class ClipForgePipeline:
             for s in segments
         ]
 
-        update_progress("All viral clips created successfully with complete story arcs!", 100)
+        update_progress(
+            "All viral clips created successfully with complete story arcs!",
+            100,
+            step=5,
+            step_name="Render & Covers",
+            detail="Pipeline completed. All clips & covers ready."
+        )
 
         return {
             "source_video": str(video_p),

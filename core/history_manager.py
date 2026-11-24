@@ -363,6 +363,36 @@ class HistoryManager:
             return c_dict
 
     @classmethod
+    def get_clip_by_filename(cls, filename: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a single clip by its output filename."""
+        cls.init_db()
+        with cls._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+            SELECT c.*, p.title as project_title, p.source_video, p.source_type, p.source_identifier
+            FROM clips c
+            LEFT JOIN projects p ON c.project_id = p.id
+            WHERE c.filename = ?
+            ORDER BY c.created_at DESC LIMIT 1
+            """, (filename,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            c_dict = dict(row)
+            c_dict["narrative_breakdown"] = {
+                "hook_score": c_dict.get("hook_score", 90),
+                "story_score": c_dict.get("story_score", 90),
+                "conclusion_score": c_dict.get("conclusion_score", 90)
+            }
+            raw_sk = c_dict.get("social_kit")
+            if raw_sk and isinstance(raw_sk, str):
+                try:
+                    c_dict["social_kit"] = json.loads(raw_sk)
+                except Exception:
+                    pass
+            return c_dict
+
+    @classmethod
     def update_clip(cls, clip_id: str, updates: Dict[str, Any]) -> bool:
         """Updates specific fields of a clip."""
         cls.init_db()

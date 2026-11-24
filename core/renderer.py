@@ -212,10 +212,11 @@ class VideoRenderer:
             result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
             if result.returncode == 0:
-                # Generate crisp JPEG thumbnail at 0.5s for instant frontend preview
+                # Generate crisp 1080x1920 TikTok cover thumbnail image with the same name as the video
                 thumb_path = output_path.with_suffix(".jpg")
                 try:
-                    self.generate_thumbnail(str(output_path), str(thumb_path), timestamp_sec=0.5)
+                    thumb_ts = min(1.2, max(0.5, duration * 0.25))
+                    self.generate_thumbnail(str(output_path), str(thumb_path), timestamp_sec=thumb_ts)
                 except Exception as te:
                     print(f"[Renderer Warning] Thumbnail generation failed: {te}")
                 return output_path
@@ -225,20 +226,47 @@ class VideoRenderer:
 
         raise RuntimeError(f"FFmpeg rendering failed: {last_err[-500:] if last_err else 'Unknown error'}")
 
-    def generate_thumbnail(self, video_path: str, output_jpg_path: str, timestamp_sec: float = 0.5) -> bool:
-        """Extracts a crisp frame at timestamp_sec and saves as JPEG."""
+    def generate_thumbnail(
+        self,
+        video_path: str,
+        output_jpg_path: str,
+        timestamp_sec: float = 1.0,
+        target_w: int = 1080,
+        target_h: int = 1920
+    ) -> bool:
+        """
+        Extracts a high-quality, crisp 9:16 (1080x1920) TikTok thumbnail cover frame
+        at timestamp_sec and saves as JPEG with the same name as the video.
+        """
         try:
+            # Standard TikTok cover: 1080x1920, 9:16 aspect ratio
+            vf = f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h}"
             cmd = [
                 self.ffmpeg_path,
                 "-y",
                 "-ss", f"{timestamp_sec:.2f}",
                 "-i", str(video_path),
+                "-vf", vf,
                 "-vframes", "1",
                 "-q:v", "2",
                 str(output_jpg_path)
             ]
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
-            return res.returncode == 0 and Path(output_jpg_path).exists()
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8)
+            if res.returncode == 0 and Path(output_jpg_path).exists():
+                return True
+            # Fallback if specific timestamp failed (e.g. video shorter than timestamp_sec)
+            cmd_fallback = [
+                self.ffmpeg_path,
+                "-y",
+                "-ss", "0.2",
+                "-i", str(video_path),
+                "-vf", vf,
+                "-vframes", "1",
+                "-q:v", "2",
+                str(output_jpg_path)
+            ]
+            res2 = subprocess.run(cmd_fallback, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8)
+            return res2.returncode == 0 and Path(output_jpg_path).exists()
         except Exception as e:
-            print(f"[Renderer] Thumbnail generation error: {e}")
+            print(f"[Renderer] TikTok thumbnail generation error: {e}")
             return False

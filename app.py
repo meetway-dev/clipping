@@ -28,7 +28,7 @@ from typing import Dict, Any, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Body
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -42,6 +42,9 @@ from core.subtitles import SubtitleGenerator
 from core.renderer import VideoRenderer
 from core.face_tracker import SmartFaceTracker
 from core.ollama_manager import OllamaManager
+from core.gdrive_manager import GoogleDriveManager
+from core.docs_generator import add_session_docs_to_zip, generate_session_docx, generate_session_text, generate_session_markdown
+from core.thumbnail_designer import TikTokThumbnailDesigner
 
 # Initialize FastAPI Application
 app = FastAPI(title="ClipForge AI Studio", version="1.1.0")
@@ -158,6 +161,9 @@ async def sync_peakcut_data():
                 "status": job.get("status", "running"),
                 "stage": job.get("status_message", "Processing..."),
                 "progress": (job.get("progress", 0) / 100.0),
+                "step_index": job.get("step_index", 1),
+                "step_name": job.get("step_name", "Transcribe"),
+                "step_detail": job.get("step_detail", job.get("status_message", "")),
                 "clips": []
             })
         elif job.get("status") == "failed":
@@ -357,7 +363,7 @@ async def preview_layout_frame(
     ass_path = None
     if show_banner or show_caption:
         ass_path = TEMP_DIR / f"prev_{uuid.uuid4().hex[:8]}.ass"
-        headline_title = banner_text if (banner_text and banner_text.strip()) else "THE 1 SECRET TO HIGH RETENTION"
+        headline_title = banner_text if (banner_text and banner_text.strip()) else "THE REAL REASON 99% OF PEOPLE FAIL AT THIS HABIT"
         cap_words = []
         if show_caption:
             sample_phrase = caption_text if (caption_text and caption_text.strip()) else "STOP SCROLLING AND LISTEN"
@@ -524,13 +530,29 @@ async def serve_media(jid: str, name: str):
         p = OUTPUTS_DIR / name
         if p.exists():
             return FileResponse(p, media_type="image/jpeg")
-        # On-the-fly thumbnail extraction fallback if video exists
+        # On-the-fly TikTok thumbnail cover generation with real speaker body & topic text
         base_video_name = Path(name).stem + ".mp4"
         for v_dir in [OUTPUTS_DIR, UPLOADS_DIR, TEMP_DIR]:
             vid_p = v_dir / base_video_name
             if vid_p.exists():
                 try:
-                    VideoRenderer().generate_thumbnail(str(vid_p), str(p), timestamp_sec=0.5)
+                    clip_obj = HistoryManager.get_clip_by_filename(base_video_name) or {}
+                    topic = clip_obj.get("title") or clip_obj.get("hook") or Path(name).stem.replace("_", " ").title()
+                    TikTokThumbnailDesigner.create_tiktok_thumbnail(
+                        video_path=str(vid_p),
+                        output_jpg_path=str(p),
+                        topic=topic,
+                        title=topic,
+                        hook=clip_obj.get("hook", ""),
+                        transcript=clip_obj.get("full_transcript", ""),
+                        timestamp_sec=1.2
+                    )
+                    if p.exists():
+                        return FileResponse(p, media_type="image/jpeg")
+                except Exception:
+                    pass
+                try:
+                    VideoRenderer().generate_thumbnail(str(vid_p), str(p), timestamp_sec=1.0)
                     if p.exists():
                         return FileResponse(p, media_type="image/jpeg")
                 except Exception:
@@ -655,9 +677,28 @@ async def remake_clip(jid: str, cid: str, payload: Dict[str, Any] = Body(...)):
         enable_voice_clarifier=enable_voice_clarifier
     )
     
+    # Generate matching AI TikTok cover thumbnail
+    thumb_path = OUTPUTS_DIR / f"{Path(out_filename).stem}.jpg"
+    try:
+        topic_val = hook_text or "HIGHLIGHT"
+        TikTokThumbnailDesigner.create_tiktok_thumbnail(
+            video_path=str(rendered_path),
+            output_jpg_path=str(thumb_path),
+            topic=topic_val,
+            title=topic_val,
+            hook=hook_text,
+            transcript=" ".join(w.get("word", "") for w in words),
+            crop_filter=crop_filter,
+            source_clean_video=source_video,
+            timestamp_sec=start_sec + min(2.0, max(0.5, duration * 0.2))
+        )
+    except Exception as te:
+        print(f"[Thumbnail Warning] Remake thumbnail error: {te}")
+
     # Update persistent database so changes are visible immediately
     HistoryManager.update_clip(cid, {
         "filename": out_filename,
+        "cover": f"{Path(out_filename).stem}.jpg",
         "duration": round(duration, 2),
         "start_sec": start_sec,
         "end_sec": end_sec,
@@ -705,6 +746,7 @@ async def bulk_delete(payload: Dict[str, Any] = Body(...)):
 async def get_clips_zip(ids: Optional[str] = None):
     projects = HistoryManager.get_all_projects()
     target_files = []
+    target_clips = []
     
     if ids:
         id_set = set(ids.split(","))
@@ -715,17 +757,31 @@ async def get_clips_zip(ids: Optional[str] = None):
                     fn = c.get("filename")
                     if fn and (OUTPUTS_DIR / fn).exists():
                         target_files.append((OUTPUTS_DIR / fn, fn))
+                        target_clips.append(c)
     else:
         for p in projects:
             for c in p.get("clips", []):
                 fn = c.get("filename")
                 if fn and (OUTPUTS_DIR / fn).exists():
                     target_files.append((OUTPUTS_DIR / fn, fn))
+                    target_clips.append(c)
                     
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for fpath, fname in target_files:
             zf.write(fpath, arcname=fname)
+            # Add companion TikTok thumbnail image with exact same name (.jpg)
+            thumb_fn = Path(fname).stem + ".jpg"
+            thumb_path = OUTPUTS_DIR / thumb_fn
+            if not thumb_path.exists() and fpath.exists():
+                try:
+                    VideoRenderer().generate_thumbnail(str(fpath), str(thumb_path), timestamp_sec=1.0)
+                except Exception:
+                    pass
+            if thumb_path.exists():
+                zf.write(thumb_path, arcname=thumb_fn)
+        if target_clips:
+            add_session_docs_to_zip(zf, target_clips, session_title="ClipForge Session")
             
     buf.seek(0)
     return Response(
@@ -758,8 +814,8 @@ async def get_ai_config():
             {"id": "gemini", "label": "Google Gemini API", "needs_key": True},
             {"id": "openai", "label": "OpenAI (GPT-4o)", "needs_key": True}
         ],
-        "models": [st.get("active_model", "llama3.2")],
-        "model": st.get("active_model", "llama3.2"),
+        "models": [st.get("active_model", "qwen2.5:7b")],
+        "model": st.get("active_model", "qwen2.5:7b"),
         "base_url": "http://127.0.0.1:11434"
     }
 
@@ -779,19 +835,19 @@ async def get_ai_models():
     except Exception:
         pass
     if not models:
-        active = st.get("active_model", "llama3.2")
-        models = [active, "llama3.2:1b", "llama3.2", "mistral", "phi3"]
+        active = st.get("active_model", "qwen2.5:7b")
+        models = [active, "qwen2.5:7b", "llama3.2:3b", "llama3.2", "mistral", "phi3"]
     seen = set()
     unique_models = [m for m in models if not (m in seen or seen.add(m))]
     return {"models": unique_models}
 
 @app.post("/api/ai/save")
 async def save_ai_config(payload: Dict[str, Any] = Body(...)):
-    model = payload.get("model", "llama3.2")
+    model = payload.get("model", "qwen2.5:7b")
     host = payload.get("host", "http://127.0.0.1:11434")
     ollama = OllamaManager.get_instance()
     ollama.base_url = host
-    ollama.model = model
+    ollama._active_model = model
     st = ollama.check_connection()
     return {"status": "ok", "connected": st.get("connected", False), "model": model, "host": host}
 
@@ -871,6 +927,171 @@ async def get_system_status():
         "whisper_model": DEFAULT_CONFIG["whisper_model"]
     }
 
+# ============================================================
+# Google Drive Cloud Integration Endpoints
+# ============================================================
+
+@app.get("/api/gdrive/status")
+async def gdrive_status():
+    """Returns current Google Drive connection telemetry and folder name."""
+    gdm = GoogleDriveManager.get_instance()
+    return gdm.get_status()
+
+@app.post("/api/gdrive/configure")
+async def gdrive_configure(payload: Dict[str, Any] = Body(...)):
+    """Saves Google OAuth Client ID, Secret, and target folder."""
+    gdm = GoogleDriveManager.get_instance()
+    status = gdm.configure(
+        client_id=payload.get("client_id"),
+        client_secret=payload.get("client_secret"),
+        redirect_uri=payload.get("redirect_uri"),
+        folder_name=payload.get("folder_name")
+    )
+    auth_url = ""
+    try:
+        if status["has_credentials"]:
+            auth_url = gdm.get_auth_url(payload.get("redirect_uri"))
+    except Exception:
+        pass
+    return {"status": "success", "config": status, "auth_url": auth_url}
+
+@app.get("/api/gdrive/auth-url")
+async def gdrive_auth_url(redirect_uri: Optional[str] = None):
+    """Generates the Google OAuth 2.0 consent URL."""
+    gdm = GoogleDriveManager.get_instance()
+    try:
+        url = gdm.get_auth_url(redirect_uri=redirect_uri)
+        return {"status": "success", "auth_url": url}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/gdrive/callback")
+async def gdrive_callback(code: Optional[str] = None, error: Optional[str] = None):
+    """Handles Google OAuth redirect, exchanges code for access & refresh tokens."""
+    if error:
+        return HTMLResponse(f"<html><body><h2>Google Drive Authentication Failed</h2><p>{error}</p><script>setTimeout(()=>window.close(),3000);</script></body></html>", status_code=400)
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing authorization code.")
+
+    gdm = GoogleDriveManager.get_instance()
+    try:
+        gdm.exchange_code(code)
+        return HTMLResponse("""<!doctype html>
+<html>
+<head><title>Google Drive Connected</title>
+<style>
+body { background:#0E0C0A; color:#E0DACB; font-family:-apple-system,BlinkMacSystemFont,sans-serif; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; margin:0; text-align:center; }
+.card { background:#1E1612; border:1px solid #FF8B33; border-radius:16px; padding:32px 40px; box-shadow:0 12px 36px rgba(0,0,0,0.7); max-width:440px; }
+h2 { color:#00E5FF; margin-top:0; }
+p { color:#A89F91; line-height:1.5; }
+.btn { background:linear-gradient(135deg,#FF8B33,#FFB800); color:#1E1612; border:none; padding:10px 24px; border-radius:8px; font-weight:700; cursor:pointer; text-decoration:none; display:inline-block; margin-top:16px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>⚡ Google Drive Connected!</h2>
+  <p>Your ClipForge Studio is now connected to Google Drive. You can close this window and start uploading your clips directly to Drive for mobile TikTok posting!</p>
+  <a href="/app" class="btn" onclick="if(window.opener){window.opener.postMessage('gdrive_connected','*');window.close();return false;}">Return to Studio</a>
+</div>
+<script>
+if(window.opener) {
+  try { window.opener.postMessage('gdrive_connected', '*'); } catch(e){}
+  setTimeout(() => window.close(), 1800);
+}
+</script>
+</body>
+</html>""")
+    except Exception as e:
+        return HTMLResponse(f"<html><body style='background:#0E0C0A;color:#FF5555;padding:40px'><h2>Google Drive Connection Error</h2><p>{e}</p></body></html>", status_code=500)
+
+@app.post("/api/gdrive/upload")
+async def gdrive_upload(payload: Dict[str, Any] = Body(...)):
+    """Uploads one or multiple clips to Google Drive."""
+    gdm = GoogleDriveManager.get_instance()
+    if not gdm.is_connected():
+        raise HTTPException(status_code=401, detail="Google Drive is not connected. Please connect in Settings -> Google Drive.")
+
+    clip_ids = payload.get("clip_ids", [])
+    if not clip_ids and payload.get("clip_id"):
+        clip_ids = [payload.get("clip_id")]
+    if not clip_ids and payload.get("cid"):
+        clip_ids = [payload.get("cid")]
+
+    # If project_id provided, gather all clips of that project
+    project_id = payload.get("project_id") or payload.get("jid")
+    if not clip_ids and project_id:
+        proj = HistoryManager.get_project_by_id(project_id)
+        if proj and proj.get("clips"):
+            clip_ids = [c["id"] for c in proj["clips"]]
+
+    if not clip_ids:
+        raise HTTPException(status_code=400, detail="No clips specified for upload.")
+
+    uploaded_results = []
+    all_projects = HistoryManager.get_all_projects()
+
+    for cid in clip_ids:
+        clip = HistoryManager.get_clip_by_id(cid)
+        filename = clip.get("filename") if clip else None
+        title = (clip.get("title") or clip.get("hook") or "TikTok Clip") if clip else "Clip"
+
+        if not filename:
+            for p in all_projects:
+                for c in p.get("clips", []):
+                    if c.get("id") == cid:
+                        filename = c.get("filename")
+                        title = c.get("title") or c.get("hook") or title
+                        break
+                if filename:
+                    break
+
+        if not filename:
+            continue
+
+        file_path = OUTPUTS_DIR / filename
+        if not file_path.exists():
+            for cand in [TEMP_DIR, UPLOADS_DIR]:
+                if (cand / filename).exists():
+                    file_path = cand / filename
+                    break
+
+        if not file_path.exists():
+            continue
+
+        try:
+            res = gdm.upload_file(str(file_path), title=title)
+            uploaded_results.append({
+                "clip_id": cid,
+                "filename": filename,
+                **res
+            })
+        except Exception as ue:
+            uploaded_results.append({
+                "clip_id": cid,
+                "filename": filename,
+                "status": "error",
+                "error": str(ue)
+            })
+
+    if not uploaded_results:
+        raise HTTPException(status_code=404, detail="Could not find rendered video files on disk for the specified clips.")
+
+    successful = [r for r in uploaded_results if r.get("status") == "success"]
+    return {
+        "status": "success" if successful else "error",
+        "total": len(clip_ids),
+        "uploaded_count": len(successful),
+        "folder_name": gdm.config.get("folder_name", "ClipForge Clips"),
+        "results": uploaded_results
+    }
+
+@app.post("/api/gdrive/disconnect")
+async def gdrive_disconnect():
+    """Disconnects Google Drive and purges stored OAuth tokens."""
+    gdm = GoogleDriveManager.get_instance()
+    gdm.disconnect()
+    return {"status": "success", "message": "Google Drive disconnected."}
+
 @app.post("/api/youtube/info")
 async def get_youtube_info(req: YouTubeInfoRequest):
     """Fetches video metadata (title, duration, thumbnail) for preview."""
@@ -886,17 +1107,20 @@ async def get_youtube_info(req: YouTubeInfoRequest):
 def run_pipeline_task(job_id: str, video_path: Optional[str], youtube_url: Optional[str], options: Dict[str, Any]):
     """Background worker for video processing (handles both local uploads & YouTube downloads)."""
     try:
-        def on_progress(message: str, percent: float):
+        def on_progress(message: str, percent: float, step: int = 1, step_name: str = "", detail: str = ""):
             if job_id in JOBS:
                 JOBS[job_id]["progress"] = percent
                 JOBS[job_id]["status_message"] = message
+                JOBS[job_id]["step_index"] = step
+                JOBS[job_id]["step_name"] = step_name or "Processing"
+                JOBS[job_id]["step_detail"] = detail or message
 
         # Step 0: Download from YouTube if URL provided
         if youtube_url:
-            on_progress("Connecting to YouTube and downloading video stream...", 5)
+            on_progress("Connecting to YouTube and downloading video stream...", 5, step=1, step_name="Download", detail="Fetching video stream from YouTube")
             def yt_progress(msg: str, pct: float):
                 scaled_pct = 5 + (pct * 0.15)  # 5% to 20%
-                on_progress(msg, scaled_pct)
+                on_progress(msg, scaled_pct, step=1, step_name="Download", detail=msg)
 
             downloaded_video = YouTubeDownloader.download(
                 url=youtube_url,
@@ -1091,6 +1315,9 @@ async def create_clips(
         "status": "queued",
         "progress": 0,
         "status_message": "Task queued. Initializing pipeline...",
+        "step_index": 1,
+        "step_name": "Transcribe",
+        "step_detail": "Queue initialized. Waiting for pipeline start...",
         "result": None,
         "error": None,
         "options": options
@@ -1175,7 +1402,7 @@ async def stream_video(filename: str):
 
 @app.get("/api/projects/{project_id}/download-zip")
 async def download_project_zip(project_id: str):
-    """Downloads all generated 9:16 vertical clips for a project in a single ZIP file."""
+    """Downloads all generated 9:16 vertical clips for a project in a single ZIP file with docs file included."""
     all_projects = HistoryManager.get_all_projects()
     project = next((p for p in all_projects if p["id"] == project_id), None)
     if not project or not project.get("clips"):
@@ -1193,6 +1420,18 @@ async def download_project_zip(project_id: str):
                 clip_path = OUTPUTS_DIR / fn
                 if clip_path.exists():
                     zf.write(clip_path, arcname=fn)
+                    # Add companion TikTok thumbnail image with exact same name (.jpg)
+                    thumb_fn = Path(fn).stem + ".jpg"
+                    thumb_path = OUTPUTS_DIR / thumb_fn
+                    if not thumb_path.exists():
+                        try:
+                            VideoRenderer().generate_thumbnail(str(clip_path), str(thumb_path), timestamp_sec=1.0)
+                        except Exception:
+                            pass
+                    if thumb_path.exists():
+                        zf.write(thumb_path, arcname=thumb_fn)
+        # Add docs files (.docx, .txt, .md) with topic, title, hashtags for all videos
+        add_session_docs_to_zip(zf, project["clips"], session_title=raw_title)
 
     return FileResponse(
         path=str(zip_path),
@@ -1202,7 +1441,7 @@ async def download_project_zip(project_id: str):
 
 @app.get("/api/jobs/{job_id}/download-zip")
 async def download_job_zip(job_id: str):
-    """Downloads all clips generated in active job session as a single ZIP."""
+    """Downloads all clips generated in active job session as a single ZIP with docs and TikTok thumbnail images included."""
     if job_id not in JOBS or not JOBS[job_id].get("result"):
         raise HTTPException(status_code=404, detail="Job or clips not found")
 
@@ -1210,7 +1449,8 @@ async def download_job_zip(job_id: str):
     if not clips:
         raise HTTPException(status_code=404, detail="No clips available in this session")
 
-    filename = f"ClipForge_Session_{job_id[:8]}_all_clips.zip"
+    session_name = f"ClipForge_Session_{job_id[:8]}"
+    filename = f"{session_name}_all_clips.zip"
     zip_path = TEMP_DIR / f"{job_id}_{filename}"
 
     with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_STORED) as zf:
@@ -1220,11 +1460,72 @@ async def download_job_zip(job_id: str):
                 clip_path = OUTPUTS_DIR / fn
                 if clip_path.exists():
                     zf.write(clip_path, arcname=fn)
+                    # Add companion TikTok thumbnail image with exact same name (.jpg)
+                    thumb_fn = Path(fn).stem + ".jpg"
+                    thumb_path = OUTPUTS_DIR / thumb_fn
+                    if not thumb_path.exists():
+                        try:
+                            VideoRenderer().generate_thumbnail(str(clip_path), str(thumb_path), timestamp_sec=1.0)
+                        except Exception:
+                            pass
+                    if thumb_path.exists():
+                        zf.write(thumb_path, arcname=thumb_fn)
+        # Add docs files (.docx, .txt, .md) with topic, title, hashtags for all videos
+        add_session_docs_to_zip(zf, clips, session_title=session_name)
 
     return FileResponse(
         path=str(zip_path),
         filename=filename,
         media_type="application/zip"
+    )
+
+@app.get("/api/projects/{project_id}/download-docs")
+async def download_project_docs(project_id: str, format: str = "docx"):
+    """Downloads a docs file containing topic, title, and hashtags for all clips in the project."""
+    all_projects = HistoryManager.get_all_projects()
+    project = next((p for p in all_projects if p["id"] == project_id), None)
+    if not project or not project.get("clips"):
+        raise HTTPException(status_code=404, detail="Project or clips not found")
+
+    raw_title = project.get("title", "Project")
+    safe_title = re.sub(r"[^\w\-]", "_", raw_title).strip("_") or "session"
+    if format.lower() == "txt":
+        content = generate_session_text(project["clips"], session_title=raw_title)
+        return Response(
+            content=content,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f"attachment; filename={safe_title}_clips_info.txt"}
+        )
+    docx_bytes = generate_session_docx(project["clips"], session_title=raw_title)
+    return Response(
+        content=docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename={safe_title}_clips_info.docx"}
+    )
+
+@app.get("/api/jobs/{job_id}/download-docs")
+async def download_job_docs(job_id: str, format: str = "docx"):
+    """Downloads a docs file containing topic, title, and hashtags for all clips in the active job session."""
+    if job_id not in JOBS or not JOBS[job_id].get("result"):
+        raise HTTPException(status_code=404, detail="Job or clips not found")
+
+    clips = JOBS[job_id]["result"].get("clips", [])
+    if not clips:
+        raise HTTPException(status_code=404, detail="No clips available in this session")
+
+    session_name = f"ClipForge_Session_{job_id[:8]}"
+    if format.lower() == "txt":
+        content = generate_session_text(clips, session_title=session_name)
+        return Response(
+            content=content,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f"attachment; filename={session_name}_clips_info.txt"}
+        )
+    docx_bytes = generate_session_docx(clips, session_title=session_name)
+    return Response(
+        content=docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename={session_name}_clips_info.docx"}
     )
 
 class TrimClipRequest(BaseModel):
@@ -1552,21 +1853,36 @@ async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
 
     segments = proj.get("transcript_segments", [])
     matching_text = []
+    start_idx = None
+    end_idx = None
     for s in segments:
         if s.get("start", 0) <= end_sec and s.get("end", 0) >= start_sec:
+            if start_idx is None:
+                start_idx = s
+            end_idx = s
             matching_text.append(s.get("text", ""))
 
+    # Snapping custom selections to Whisper sentence boundaries prevents
+    # manually selected clips from starting or ending on half of a thought.
+    if start_idx is not None:
+        start_sec = max(0.0, float(start_idx.get("start", start_sec)) - 0.15)
+        end_sec = float(end_idx.get("end", end_sec)) + 0.25
+        duration = max(3.0, end_sec - start_sec)
+
     full_text = " ".join(matching_text) or custom_title
-    approx_words = full_text.split()
-    custom_words = []
-    w_dur = duration / max(1, len(approx_words))
-    for i, w in enumerate(approx_words):
-        w_start = start_sec + i * w_dur
-        custom_words.append({
-            "word": w,
-            "start": round(w_start, 2),
-            "end": round(w_start + w_dur * 0.9, 2)
-        })
+    pipeline = ClipForgePipeline()
+    custom_words = pipeline.transcriber.transcribe_segment(source_video, start_sec, duration)
+    if not custom_words:
+        approx_words = full_text.split()
+        w_dur = duration / max(1, len(approx_words))
+        custom_words = [
+            {
+                "word": word,
+                "start": round(start_sec + i * w_dur, 2),
+                "end": round(start_sec + (i + 0.9) * w_dur, 2)
+            }
+            for i, word in enumerate(approx_words)
+        ]
 
     top_padding = float(payload.get("top_padding", payload.get("pad_top", 0.0)))
     bottom_padding = float(payload.get("bottom_padding", payload.get("pad_bottom", 0.0)))
@@ -1634,6 +1950,23 @@ async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
         bgm_volume=bgm_volume
     )
 
+    # Generate matching AI TikTok cover thumbnail
+    thumb_path = OUTPUTS_DIR / f"{Path(out_filename).stem}.jpg"
+    try:
+        TikTokThumbnailDesigner.create_tiktok_thumbnail(
+            video_path=str(rendered_path),
+            output_jpg_path=str(thumb_path),
+            topic=custom_title,
+            title=custom_title,
+            hook=approx_words[0] if approx_words else custom_title,
+            transcript=full_text,
+            crop_filter=crop_filter,
+            source_clean_video=source_video,
+            timestamp_sec=start_sec + min(2.0, max(0.5, duration * 0.2))
+        )
+    except Exception as te:
+        print(f"[Thumbnail Warning] Custom clip thumbnail error: {te}")
+
     # Generate social media kit
     detector = ViralDetector()
     social_kit = detector.generate_social_kit(
@@ -1669,11 +2002,106 @@ async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
 
     return {"status": "success", "clip": new_clip}
 
+@app.post("/api/clips/{clip_id}/thumbnail/generate-hooks")
+async def generate_clip_thumbnail_hooks(clip_id: str, payload: Dict[str, Any] = Body(default={})):
+    """Generates viral TikTok thumbnail hook variations across 4 high-converting archetypes."""
+    clip = HistoryManager.get_clip_by_id(clip_id)
+    topic = payload.get("topic") or (clip.get("title") if clip else "") or "PODCAST TOPIC"
+    transcript = payload.get("transcript") or (clip.get("full_transcript") if clip else "") or ""
+    hook = payload.get("hook") or (clip.get("hook") if clip else "") or ""
+
+    archetypes = [
+        ("curiosity", "🤯 Curiosity Loop"),
+        ("warning", "⚠️ Shock / Warning"),
+        ("formula", "📋 3-Rule Blueprint"),
+        ("callout", "🎯 Audience Callout")
+    ]
+
+    results = []
+    for arch_key, arch_label in archetypes:
+        copy = TikTokThumbnailDesigner.generate_ai_copy(
+            topic=topic,
+            title=topic,
+            hook=hook,
+            transcript=transcript,
+            archetype=arch_key
+        )
+        copy["archetype"] = arch_key
+        copy["label"] = arch_label
+        copy["full_headline"] = f"{copy.get('headline_1', '')} {copy.get('headline_2', '')}".strip()
+        results.append(copy)
+
+    return {
+        "status": "success",
+        "topic": topic,
+        "hooks": results
+    }
+
+@app.post("/api/clips/{clip_id}/thumbnail/regenerate")
+async def regenerate_clip_thumbnail(clip_id: str, payload: Dict[str, Any] = Body(default={})):
+    """Regenerates the AI TikTok cover thumbnail for a specific clip with custom styles, colors, and hooks."""
+    clip = HistoryManager.get_clip_by_id(clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found")
+
+    fn = clip.get("filename")
+    if not fn:
+        raise HTTPException(status_code=400, detail="Clip has no video filename")
+
+    vid_path = OUTPUTS_DIR / fn
+    if not vid_path.exists():
+        raise HTTPException(status_code=404, detail="Rendered video not found on disk")
+
+    thumb_path = OUTPUTS_DIR / f"{Path(fn).stem}.jpg"
+    topic = payload.get("topic") or clip.get("title") or "HIGHLIGHT"
+    hook = payload.get("hook") or clip.get("hook") or ""
+    transcript = payload.get("transcript") or clip.get("full_transcript") or ""
+
+    style = payload.get("style", "hormozi")
+    accent_color = payload.get("accent_color", "#FFE600")
+    archetype = payload.get("archetype", "curiosity")
+    timestamp_sec = float(payload.get("timestamp_sec", 1.2))
+
+    # Build custom copy_data if provided by user
+    copy_data = None
+    if payload.get("headline_1") or payload.get("headline_2"):
+        copy_data = {
+            "category": str(payload.get("category") or topic.upper())[:22],
+            "headline_1": str(payload.get("headline_1", "")).upper()[:20],
+            "headline_2": str(payload.get("headline_2", "")).upper()[:20],
+            "subheadline": str(payload.get("subheadline", ""))[:55],
+            "tag_badge": str(payload.get("tag_badge", "EPISODE CLIP")).upper()[:20]
+        }
+
+    TikTokThumbnailDesigner.create_tiktok_thumbnail(
+        video_path=str(vid_path),
+        output_jpg_path=str(thumb_path),
+        topic=topic,
+        title=topic,
+        hook=hook,
+        transcript=transcript,
+        timestamp_sec=timestamp_sec,
+        copy_data=copy_data,
+        style=style,
+        accent_color=accent_color,
+        archetype=archetype
+    )
+
+    return {
+        "status": "success",
+        "thumbnail_url": f"/media/{clip['project_id']}/{thumb_path.name}?t={int(time.time())}",
+        "filename": thumb_path.name,
+        "style": style,
+        "accent_color": accent_color,
+        "timestamp_sec": timestamp_sec,
+        "copy_data": copy_data
+    }
+
 
 if __name__ == "__main__":
     import uvicorn
     print("\n" + "=" * 60)
-    print("  🚀 ClipForge AI Studio is starting up!")
-    print("  🌐 Open your browser at: http://localhost:8000")
+    print("  ClipForge AI Studio is starting up!")
+    print("  Open your browser at: http://localhost:8000")
     print("=" * 60 + "\n")
     uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=False)

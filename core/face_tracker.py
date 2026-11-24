@@ -61,20 +61,29 @@ class SmartFaceTracker:
     def detect_faces(self, frame_bgr: np.ndarray) -> List[Dict[str, Any]]:
         """
         Detects all faces in a frame using YuNet and projects to native coordinates.
+        Supports both 16:9 horizontal, 9:16 vertical, and square frames adaptively.
         Returns list of face dicts: {x, y, w, h, cx, cy, score}.
         """
         if self._detector is None:
             return []
 
         h, w = frame_bgr.shape[:2]
-        small_frame = cv2.resize(frame_bgr, self._input_size)
+        if w >= h:
+            in_w = 320
+            in_h = max(160, int(round(320 * (h / float(w)))))
+        else:
+            in_w = 320
+            in_h = max(320, int(round(320 * (h / float(w)))))
+
+        self._detector.setInputSize((in_w, in_h))
+        small_frame = cv2.resize(frame_bgr, (in_w, in_h))
         retval, faces = self._detector.detect(small_frame)
 
         if retval is None or faces is None or len(faces) == 0:
             return []
 
-        scale_x = w / float(self._input_size[0])
-        scale_y = h / float(self._input_size[1])
+        scale_x = w / float(in_w)
+        scale_y = h / float(in_h)
 
         parsed = []
         for f in faces:

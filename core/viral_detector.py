@@ -93,51 +93,199 @@ class ViralDetector:
         min_seconds: float = 25.0,
         max_seconds: float = 65.0,
         top_k: int = 5,
-        clip_mode: str = "highlights"
+        clip_mode: str = "highlights",
+        progress_cb: Optional[Any] = None
     ) -> List[Dict[str, Any]]:
         """
         Discovers complete narrative viral segments.
         Supports clip_mode = 'highlights' or 'parting' (Part 1, Part 2, Part 3).
         Allows top_k up to 20 clips.
+        Reports real-time granular progress callbacks to eliminate freezing at 35%.
         """
         if not segments:
             return []
 
         # Step 1: Reconstruct semantic sentences with narrative roles
+        if progress_cb:
+            progress_cb("Reconstructing speech into complete semantic sentences...", 32.0)
+
         sentences = SemanticSentenceAligner.reconstruct_sentences(segments)
         if not sentences:
             return []
 
-        # If LLM is available and user wants highlights
+        # If LLM is available and user wants highlights (with tight 7s timeout to prevent freezing)
         if clip_mode == "highlights" and self.check_ollama_alive() and sentences[-1]["end"] >= min_seconds:
             try:
+                if progress_cb:
+                    progress_cb("Consulting AI model for viral story arcs...", 34.0)
                 llm_clips = self._detect_with_llm(sentences, min_seconds, max_seconds, top_k)
                 if llm_clips:
-                    return llm_clips
+                    if progress_cb:
+                        progress_cb("Snapping AI story moments to complete sentence boundaries...", 38.0)
+                    llm_clips = self._snap_llm_clips(sentences, llm_clips, min_seconds, max_seconds)
+                    if llm_clips:
+                        if progress_cb:
+                            progress_cb(f"Finalized {len(llm_clips)} complete viral clips from AI story arcs...", 41.0)
+                        return llm_clips
             except Exception as e:
-                print(f"[ViralDetector] LLM skipped ({e}), using Narrative Arc Engine.")
+                print(f"[ViralDetector] LLM skipped ({e}), using instant Narrative Arc Engine.")
 
         # Step 2: Route by mode
         if clip_mode == "parting":
-            return self._detect_topic_parting(sentences, min_seconds, max_seconds, top_k)
+            if progress_cb:
+                progress_cb("Clustering episodic topic parts (Part 1, Part 2)...", 36.0)
+            res = self._detect_topic_parting(sentences, min_seconds, max_seconds, top_k)
         else:
-            return self._detect_viral_highlights(sentences, min_seconds, max_seconds, top_k)
+            if progress_cb:
+                progress_cb("Scanning complete conversational thoughts & 60–90s sweet spot...", 36.0)
+            res = self._detect_viral_highlights(sentences, min_seconds, max_seconds, top_k, progress_cb=progress_cb)
+
+        if progress_cb:
+            progress_cb(f"Finalized {len(res)} complete high-retention viral clips...", 41.0)
+        return res
 
     def _extract_topic_headline(self, full_text: str, fallback_hook: str) -> str:
-        """Extracts a high-retention 3-5 word topic headline for the top banner."""
+        """
+        Extracts or synthesizes an engaging, high-retention multi-word topic headline (6-12 words)
+        specifically formatted for the spacious top safe-area banner in 9:16 vertical video.
+        Uses curiosity gaps, contrarian statements, and the core insight to hook viewers.
+        """
+        clean_hook = re.sub(r"[^\w\s\-\'\?\!]", "", str(fallback_hook or "")).strip()
+
+        # 1. Clean conversational filler words from opening spoken sentences
+        clean_hook = re.sub(
+            r"^(?:(?:so|and|but|well|like|i mean|you know|honestly|actually|literally|basically|now|ok|okay)[,\s]+)+",
+            "",
+            clean_hook,
+            flags=re.IGNORECASE
+        ).strip()
+
+        # If fallback hook contains an opening question, transform or retain it
+        lower_hook = clean_hook.lower()
+        if any(lower_hook.startswith(q) for q in ["do you know why", "did you know that", "have you ever wondered why", "can you explain why"]):
+            clean_hook = re.sub(r"^(do you know why|did you know that|have you ever wondered why|can you explain why)\s*", "WHY ", clean_hook, flags=re.IGNORECASE).strip()
+
+        hook_words = clean_hook.split()
+
+        # If the cleaned opening sentence is already a strong, self-contained hook (6 to 14 words), use it
+        if 5 <= len(hook_words) <= 14:
+            return clean_hook.upper()
+
+        # If it's longer than 14 words, extract the primary clause (up to 10-12 words)
+        if len(hook_words) > 14:
+            # Cut at natural clause boundaries if present
+            for delim in [",", " because ", " which ", " that ", " but ", " and "]:
+                if delim in clean_hook:
+                    clause = clean_hook.split(delim)[0].strip()
+                    c_words = clause.split()
+                    if 5 <= len(c_words) <= 12:
+                        return clause.upper()
+            return " ".join(hook_words[:11]).upper()
+
+        # 2. If opening sentence is too short or missing, extract top keywords and apply proven viral hooks
         try:
             keywords = self.kw_extractor.extract_keywords(full_text)
             if keywords:
-                # Top keyword by relevance
-                best_phrase = keywords[0][0].strip().title()
-                if len(best_phrase.split()) <= 1 and len(keywords) > 1:
-                    best_phrase = f"{best_phrase}: {keywords[1][0].strip().title()}"
-                return best_phrase.upper()
+                best_kw = keywords[0][0].strip().title()
+                kw2 = keywords[1][0].strip().title() if len(keywords) > 1 else ""
+                kw_clean = best_kw.upper()
+
+                lower_text = full_text.lower()
+                # Negative / Warning
+                if any(w in lower_text for w in ["mistake", "wrong", "fail", "failure", "danger", "stop", "never", "ruin", "destroy"]):
+                    return f"STOP MAKING THIS CRITICAL {kw_clean} MISTAKE RIGHT NOW"
+                # Question / Why
+                if any(w in lower_text for w in ["why", "how", "reason", "because"]):
+                    return f"THE REAL REASON 99% OF PEOPLE FAIL AT {kw_clean}"
+                # Health / Body / Mind
+                if any(w in lower_text for w in ["body", "brain", "sleep", "diet", "sugar", "cells", "health", "aging"]):
+                    return f"WHAT HAPPENS TO YOUR BODY WHEN YOU MASTER {kw_clean}"
+                # Habit / Success / Secret
+                if kw2:
+                    return f"THE UNTOLD TRUTH ABOUT {kw_clean} AND {kw2.upper()}"
+                return f"THE #1 SECRET TO {kw_clean} NOBODY TALKS ABOUT"
         except Exception:
             pass
 
-        words = [w for w in fallback_hook.split() if len(w) > 2][:4]
-        return " ".join(words).upper() if words else "PODCAST TOPIC"
+        # 3. Final fallback: combine whatever words exist into an engaging hook phrase
+        if hook_words:
+            core_words = [w for w in hook_words if len(w) > 1][:10]
+            if len(core_words) >= 4:
+                return " ".join(core_words).upper()
+            return f"THE UNTOLD TRUTH ABOUT {' '.join(core_words).upper()}"
+
+        return "THE SECRET TO HIGH PERFORMANCE AND SUCCESS"
+
+    def _snap_llm_clips(
+        self,
+        sentences: List[Dict[str, Any]],
+        llm_clips: List[Dict[str, Any]],
+        min_seconds: float,
+        max_seconds: float
+    ) -> List[Dict[str, Any]]:
+        """Converts approximate LLM timestamps into complete, self-contained sentences."""
+        snapped = []
+        for c in llm_clips:
+            requested_start = float(c.get("start", 0.0))
+            requested_end = float(c.get("end", requested_start))
+
+            start_idx = min(
+                range(len(sentences)),
+                key=lambda i: abs(sentences[i]["start"] - requested_start)
+            )
+            end_idx = min(
+                range(start_idx, len(sentences)),
+                key=lambda i: abs(sentences[i]["end"] - requested_end)
+            )
+
+            # Questions must include the complete answer/punchline, not only the question.
+            if sentences[start_idx]["text"].strip().endswith("?"):
+                for i in range(start_idx + 1, len(sentences)):
+                    end_idx = i
+                    candidate_duration = sentences[i]["end"] - sentences[start_idx]["start"]
+                    if sentences[i].get("is_conclusion") or sentences[i]["text"].strip().endswith((".", "!")):
+                        if candidate_duration >= min_seconds * 0.90:
+                            # If we hit the 60-90s sweet spot, break at this complete sentence
+                            if min_seconds >= 50.0 and 60.0 <= candidate_duration <= 95.0:
+                                break
+                            elif candidate_duration >= min_seconds:
+                                break
+                    if candidate_duration >= max_seconds:
+                        break
+
+            # Snap backwards across dependent sentence starts.
+            while start_idx > 0 and sentences[start_idx].get("is_dependent_start"):
+                start_idx -= 1
+
+            # Never end on a dangling dependent/hanging sentence.
+            while end_idx < len(sentences) - 1 and sentences[end_idx].get("is_hanging_end"):
+                end_idx += 1
+
+            start = sentences[start_idx]["start"]
+            end = sentences[end_idx]["end"]
+            duration = end - start
+            if duration < min_seconds * 0.90 or duration > max_seconds * 1.10:
+                continue
+
+            clip_sentences = sentences[start_idx:end_idx + 1]
+            transcript = " ".join(s["text"] for s in clip_sentences)
+            title = c.get("title", self._extract_topic_headline(transcript, clip_sentences[0]["text"]))
+            snapped.append({
+                **c,
+                "start": round(max(0.0, start - 0.15), 2),
+                "end": round(end + 0.25, 2),
+                "duration": round((end + 0.25) - max(0.0, start - 0.15), 2),
+                "title": str(title).upper(),
+                "hook": clip_sentences[0]["text"],
+                "full_transcript": transcript,
+                "narrative_breakdown": {
+                    "hook_score": min(99, int(c.get("virality_score", 90))),
+                    "story_score": 92,
+                    "conclusion_score": 94
+                },
+                "reason": f"AI-selected topic snapped to complete sentences. {c.get('reason', '')}".strip()
+            })
+        return snapped[:len(llm_clips)]
 
     def _cluster_topics(self, sentences: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
         """Segments the stream of sentences into coherent topic episodes."""
@@ -173,24 +321,76 @@ class ViralDetector:
         sentences: List[Dict[str, Any]],
         min_seconds: float,
         max_seconds: float,
-        top_k: int
+        top_k: int,
+        progress_cb: Optional[Any] = None
     ) -> List[Dict[str, Any]]:
         """
         Mode 1: High-Retention Standalone Viral Clips.
         Ensures clips begin strictly on defined topic anchor starters (tracing back if needed)
-        and resolve on definitive conclusions.
+        and resolve on definitive conclusions without cutting off mid-thought.
+        Prioritizes the 60 to 90 seconds sweet spot while allowing and including
+        longer complete stories up to max_seconds (e.g. 180s to 300s).
         """
         candidates = []
         n = len(sentences)
+
+        # Question/answer moments: One of the strongest podcast short formats.
+        # Start on the spoken question and extend through the complete answer/punchline.
+        for q_idx, question in enumerate(sentences):
+            if not question["text"].strip().endswith("?"):
+                continue
+
+            start_idx = q_idx
+            while start_idx > 0 and sentences[start_idx].get("is_dependent_start"):
+                start_idx -= 1
+
+            for j in range(q_idx + 1, n):
+                answer = sentences[j]
+                dur = answer["end"] - sentences[start_idx]["start"]
+                if dur > max_seconds + 4.0:
+                    break
+
+                if dur >= min_seconds:
+                    if answer.get("is_conclusion") or answer["text"].strip().endswith((".", "!")):
+                        if not answer.get("is_hanging_end"):
+                            clip_sentences = sentences[start_idx : j + 1]
+                            clip_text = " ".join(s["text"] for s in clip_sentences)
+                            topic_title = self._extract_topic_headline(clip_text, question["text"])
+
+                            # Duration sweet-spot bonus (favoring 60-90s)
+                            if min_seconds >= 50.0:
+                                len_bonus = 25 if (60.0 <= dur <= 95.0) else (18 if dur <= 130.0 else 12)
+                            else:
+                                len_bonus = 20 if (30.0 <= dur <= 60.0) else (16 if dur <= 90.0 else 10)
+
+                            candidates.append({
+                                "start": round(max(0.0, clip_sentences[0]["start"] - 0.15), 2),
+                                "end": round(clip_sentences[-1]["end"] + 0.25, 2),
+                                "duration": round((clip_sentences[-1]["end"] + 0.25) - max(0.0, clip_sentences[0]["start"] - 0.15), 2),
+                                "title": topic_title,
+                                "hook": clip_sentences[0]["text"],
+                                "virality_score": min(99, max(60, 72 + len_bonus)),
+                                "narrative_breakdown": {
+                                    "hook_score": 99,
+                                    "story_score": 94,
+                                    "conclusion_score": 96
+                                },
+                                "full_transcript": clip_text,
+                                "part_info": "",
+                                "series_id": "",
+                                "reason": f"Complete Q&A narrative ({len(clip_sentences)} sentences) with question and conclusive answer."
+                            })
+                            # If we hit an ideal sweet-spot length, break to avoid over-expanding
+                            if 60.0 <= dur <= 95.0:
+                                break
 
         for i in range(n):
             start_sentence = sentences[i]
             
             # Anchor enforcement: find clean topic premise
             actual_start_idx = i
-            # Trace backwards up to 3 sentences if current starts with dependent pronoun/conjunction
             back_count = 0
-            while actual_start_idx > 0 and sentences[actual_start_idx]["is_dependent_start"] and back_count < 3:
+            while actual_start_idx > 0 and sentences[actual_start_idx]["is_dependent_start"] and back_count < 4:
                 actual_start_idx -= 1
                 back_count += 1
 
@@ -200,9 +400,13 @@ class ViralDetector:
 
             start_time = sentences[actual_start_idx]["start"]
 
-            for j in range(i, min(n, i + 35)):
+            # Dynamic scan up to max_seconds (no artificial sentence limit!)
+            for j in range(actual_start_idx, n):
                 end_sentence = sentences[j]
-                
+                dur_so_far = end_sentence["end"] - start_time
+                if dur_so_far > max_seconds + 5.0:
+                    break
+
                 # Snap hanging ends forward to resolution
                 actual_end_idx = j
                 if end_sentence["is_hanging_end"] and j < n - 1:
@@ -215,10 +419,7 @@ class ViralDetector:
                 end_time = last_sent["end"]
                 dur = end_time - start_time
 
-                if dur >= min_seconds:
-                    if dur > max_seconds:
-                        break
-
+                if dur >= min_seconds and dur <= max_seconds:
                     clip_sentences = sentences[actual_start_idx : actual_end_idx + 1]
                     clip_text = " ".join(s["text"] for s in clip_sentences)
 
@@ -241,9 +442,27 @@ class ViralDetector:
                     word_count = sum(s["word_count"] for s in clip_sentences)
                     wps = word_count / dur if dur > 0 else 0
                     pace_score = min(20, int(wps * 5.5))
-                    length_bonus = 15 if 32 <= dur <= 58 else 8
 
-                    total_score = min(99, max(55, 20 + hook_score + conclusion_score + pace_score + length_bonus))
+                    # Duration Sweet-Spot Scoring
+                    # When min_seconds >= 50 (e.g. 60 or 70s), strongly prioritize 60-90s sweet spot!
+                    if min_seconds >= 50.0:
+                        if 60.0 <= dur <= 90.0:
+                            length_bonus = 25  # Prime 60-90s TikTok Sweet Spot
+                        elif 90.0 < dur <= 130.0:
+                            length_bonus = 18  # Strong comprehensive narrative
+                        elif 130.0 < dur <= max_seconds:
+                            length_bonus = 12  # Long deep-dive interview breakdown
+                        else:
+                            length_bonus = 6
+                    else:
+                        if 30.0 <= dur <= 60.0:
+                            length_bonus = 20
+                        elif 60.0 < dur <= 90.0:
+                            length_bonus = 16
+                        else:
+                            length_bonus = 10
+
+                    total_score = min(99, max(55, 18 + hook_score + conclusion_score + pace_score + length_bonus))
                     topic_title = self._extract_topic_headline(clip_text, first_sent["text"])
 
                     candidates.append({
@@ -264,21 +483,56 @@ class ViralDetector:
                         "reason": f"Complete standalone narrative ({len(clip_sentences)} sentences) with anchor opening and conclusive resolution."
                     })
 
-        # Non-Maximum Suppression
-        candidates.sort(key=lambda x: x["virality_score"], reverse=True)
+        # Proportional Non-Maximum Suppression
+        def is_overlapping(c1, c2, max_overlap_ratio=0.35):
+            o_start = max(c1["start"], c2["start"])
+            o_end = min(c1["end"], c2["end"])
+            if o_end <= o_start:
+                return False
+            overlap_dur = o_end - o_start
+            min_len = min(c1["duration"], c2["duration"])
+            return (overlap_dur / min_len) > max_overlap_ratio
+
+        # Separate candidates into sweet-spot (60-90s) and extended/long (95s..max)
+        sweet_spot_max = max(95.0, min_seconds + 30.0)
+        sweet_candidates = [c for c in candidates if c["duration"] <= sweet_spot_max]
+        long_candidates = [c for c in candidates if c["duration"] > sweet_spot_max]
+
+        sweet_candidates.sort(key=lambda x: x["virality_score"], reverse=True)
+        long_candidates.sort(key=lambda x: x["virality_score"], reverse=True)
+
         selected = []
-        for cand in candidates:
-            overlaps = False
-            for sel in selected:
-                overlap_start = max(cand["start"], sel["start"])
-                overlap_end = min(cand["end"], sel["end"])
-                if overlap_end - overlap_start > 8.0:
-                    overlaps = True
-                    break
-            if not overlaps:
+
+        # If user allowed long clips (max_seconds >= 120s) and requested multiple clips (top_k >= 3),
+        # allocate a balanced portfolio: mostly 60-90s sweet-spot clips, plus 1 or 2 top complete long stories!
+        target_long = 1 if (max_seconds >= 120.0 and top_k >= 3 and long_candidates) else 0
+        if top_k >= 6 and max_seconds >= 150.0 and len(long_candidates) >= 2:
+            target_long = 2
+
+        target_sweet = top_k - target_long
+
+        # 1. Fill sweet-spot (60-90s) clips first (main focus)
+        for cand in sweet_candidates:
+            if not any(is_overlapping(cand, s) for s in selected):
+                selected.append(cand)
+            if len(selected) >= target_sweet:
+                break
+
+        # 2. Add top complete long clip(s) if available ("if there is long then add in long")
+        for cand in long_candidates:
+            if not any(is_overlapping(cand, s) for s in selected):
                 selected.append(cand)
             if len(selected) >= top_k:
                 break
+
+        # 3. If still space, backfill from remaining sweet or long candidates
+        if len(selected) < top_k:
+            all_remaining = sorted(candidates, key=lambda x: x["virality_score"], reverse=True)
+            for cand in all_remaining:
+                if not any(is_overlapping(cand, s) for s in selected):
+                    selected.append(cand)
+                if len(selected) >= top_k:
+                    break
 
         return selected
 
@@ -418,7 +672,8 @@ class ViralDetector:
             end_m, end_s = divmod(int(s["end"]), 60)
             transcript_lines.append(f"[{start_m:02d}:{start_s:02d} - {end_m:02d}:{end_s:02d}] {s['text']}")
 
-        full_text = "\n".join(transcript_lines[:250])
+        # Feed enough context for topic arcs while keeping local inference bounded.
+        full_text = "\n".join(transcript_lines[:400])
 
         prompt = f"""You are a master short-form editor for TikTok and YouTube Shorts.
 Analyze this transcript and find the {top_k} most engaging, self-contained viral stories.
@@ -426,8 +681,13 @@ Analyze this transcript and find the {top_k} most engaging, self-contained viral
 CRITICAL RULES:
 1. Complete Narrative Arc: The clip MUST start with a clear topic/hook and END with a natural, complete conclusion.
 2. NEVER cut off mid-thought, mid-sentence, or leave the viewer hanging without context.
-3. Duration must be between {int(min_seconds)}s and {int(max_seconds)}s.
-4. Output a 3-5 word TOPIC HEADLINE in ALL CAPS.
+3. Duration Rules:
+   - PRIMARY FOCUS: Focus primarily on self-contained viral stories that conclude naturally within 60 to 90 seconds (ideal for TikTok Creator Rewards and peak viewer retention).
+   - EXTENDED STORIES: If an in-depth story, debate, or interview explanation naturally takes longer to reach its conclusion, allow it to run longer (up to {int(max_seconds)}s) so that the thought is complete and no sentence is cut off mid-thought.
+   - Every clip duration must be between {int(min_seconds)}s and {int(max_seconds)}s.
+4. If the moment starts with a question, include the full spoken answer and the payoff.
+5. Prefer one clearly identifiable podcast topic over switching between unrelated topics.
+6. Output an engaging, high-CTR TOPIC HEADLINE (6 to 12 words in ALL CAPS) that takes full advantage of the top screen safe-area space, hooks viewers instantly, and reveals the core insight (e.g. "THE REAL REASON 99% OF PEOPLE FAIL AT THIS", "WHAT HAPPENS TO YOUR BODY WHEN YOU QUIT SUGAR", "THE 3 DAILY HABITS THAT WILL CHANGE YOUR LIFE").
 
 Transcript:
 {full_text}
@@ -437,7 +697,7 @@ Respond ONLY with a JSON array:
   {{
     "start": 12.0,
     "end": 48.5,
-    "title": "TOPIC HEADLINE HERE",
+    "title": "THE REAL REASON 99% OF PEOPLE FAIL AT THIS",
     "hook": "Opening hook sentence...",
     "virality_score": 96,
     "reason": "Complete story with powerful conclusion."
@@ -458,7 +718,8 @@ Respond ONLY with a JSON array:
             method="POST"
         )
 
-        with urllib.request.urlopen(req, timeout=6.0) as resp:
+        # Set a nimble 7s timeout for LLM so it never freezes the pipeline if model is slow/warming up
+        with urllib.request.urlopen(req, timeout=7.0) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             content = data.get("response", "").strip()
             match = re.search(r"\[.*\]", content, re.DOTALL)

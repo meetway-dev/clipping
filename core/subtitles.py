@@ -126,6 +126,49 @@ class SubtitleGenerator:
         return {"is_power": False, "color": None, "emoji": None}
 
     @classmethod
+    def format_multiline_headline(cls, text: str, max_chars_per_line: int = 28) -> str:
+        """Formats the top viral headline into punchy, balanced lines for 9:16 vertical video."""
+        if not text:
+            return ""
+        clean = re.sub(r"[\[\]]", "", str(text)).strip()
+        if not clean:
+            return ""
+
+        if len(clean) <= max_chars_per_line:
+            return clean
+
+        # Natural punctuation splits (: - — ?)
+        for sep in [": ", " - ", " — "]:
+            if sep in clean:
+                parts = clean.split(sep, 1)
+                p0 = parts[0].strip()
+                p1 = parts[1].strip()
+                if len(p0) <= max_chars_per_line and len(p1) <= max_chars_per_line * 1.8:
+                    sep_char = ":" if sep == ": " else " -"
+                    if len(p1) > max_chars_per_line:
+                        sub_wrapped = cls.format_multiline_headline(p1, max_chars_per_line=max_chars_per_line)
+                        return f"{p0}{sep_char}\\N{sub_wrapped}"
+                    return f"{p0}{sep_char}\\N{p1}"
+
+        # Word wrapping into balanced lines
+        words = clean.split()
+        lines = []
+        curr = []
+        curr_len = 0
+        for w in words:
+            if curr and (curr_len + len(w) + 1 > max_chars_per_line):
+                lines.append(" ".join(curr))
+                curr = [w]
+                curr_len = len(w)
+            else:
+                curr.append(w)
+                curr_len += len(w) + (1 if curr_len > 0 else 0)
+        if curr:
+            lines.append(" ".join(curr))
+
+        return "\\N".join(lines[:3])
+
+    @classmethod
     def create_ass_file(
         cls,
         words: List[Dict[str, Any]],
@@ -173,12 +216,50 @@ class SubtitleGenerator:
 
         is_fit_canvas = layout_mode in ["fit_canvas", "fit_center", "fit_hook", "fit_video"]
 
+        # 1. Pre-format Top Viral Hook Headline to dynamically compute adaptive dimensions
+        line_count = 1
+        formatted_headline = ""
+        banner_dialogue_line = ""
+        if show_headline_banner:
+            raw_headline = re.sub(r"[\[\]]", "", str(topic_headline or "VIRAL PODCAST TOPIC")).strip().upper()
+            if part_info and part_info.upper() not in raw_headline:
+                raw_headline = f"{raw_headline} ({part_info.upper()})"
+            formatted_headline = cls.format_multiline_headline(raw_headline, max_chars_per_line=28)
+            line_elements = formatted_headline.split("\\N")
+            line_count = max(1, len(line_elements))
+
+            # Style: Line 1 crisp white, Line 2 high-CTR neon yellow punch, Line 3 white
+            # &H0000E5FF is neon bright yellow in ASS BGR, &H00FFFFFF is crisp white, Outline &H00000000 (black 4.5px)
+            if len(line_elements) == 2:
+                banner_dialogue_line = (
+                    f"{{\\fad(250,0)\\3c&H00000000&}}"
+                    f"{{\\c&H00FFFFFF&}}{line_elements[0]}\\N"
+                    f"{{\\c&H0000E5FF&}}{line_elements[1]}"
+                )
+            elif len(line_elements) >= 3:
+                banner_dialogue_line = (
+                    f"{{\\fad(250,0)\\3c&H00000000&}}"
+                    f"{{\\c&H00FFFFFF&}}{line_elements[0]}\\N"
+                    f"{{\\c&H0000E5FF&}}{line_elements[1]}\\N"
+                    f"{{\\c&H00FFFFFF&}}{'\\N'.join(line_elements[2:])}"
+                )
+            else:
+                banner_dialogue_line = f"{{\\fad(250,0)\\c&H0000E5FF&\\3c&H00000000&}}{formatted_headline}"
+
+        # Adaptive header font size based on line count and canvas space
+        if line_count >= 3:
+            header_font_size = 46
+        elif line_count == 2:
+            header_font_size = 50
+        else:
+            header_font_size = 54
+        est_banner_h = line_count * (header_font_size + 12)
+
         if is_fit_canvas:
             actual_top_space = top_pad_px if has_padding else max(80, min(950, top_space))
             bottom_space = max(160, 1920 - (actual_top_space + video_h))
             active_margin_v = max(120, int(bottom_space / 2))
-            header_margin_v = max(40, int(actual_top_space / 2) - 25)
-            header_font_size = 46
+            header_margin_v = max(35, int((actual_top_space - est_banner_h) / 2))
         elif layout_mode == "split_screen":
             if bottom_pad_px >= 280:
                 active_margin_v = max(120, int(bottom_pad_px / 2))
@@ -187,10 +268,9 @@ class SubtitleGenerator:
                 active_margin_v = max(240, bottom_pad_px + split_h - 70)
 
             if top_pad_px > 0:
-                header_margin_v = max(40, int(top_pad_px / 2) - 20)
+                header_margin_v = max(35, int((top_pad_px - est_banner_h) / 2))
             else:
-                header_margin_v = 140
-            header_font_size = 38
+                header_margin_v = 120
         else:
             if bottom_pad_px >= 280:
                 active_margin_v = max(140, int(bottom_pad_px / 2))
@@ -200,10 +280,9 @@ class SubtitleGenerator:
                 active_margin_v = style.get("margin_v", 340)
 
             if top_pad_px >= 180:
-                header_margin_v = max(40, int(top_pad_px / 2) - 20)
+                header_margin_v = max(35, int((top_pad_px - est_banner_h) / 2))
             else:
-                header_margin_v = 140
-            header_font_size = 38
+                header_margin_v = 120
 
         header = f"""[Script Info]
 Title: ClipForge Viral Subtitles
@@ -217,7 +296,7 @@ PlayResY: 1920
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,{style['fontname']},{style['fontsize']},{style['primary_color']},{style['secondary_color']},{style['outline_color']},{style['back_color']},{style['bold']},0,0,0,100,100,2,0,1,{style['outline']},{style['shadow']},2,50,50,{active_margin_v},1
-Style: TopicHeader,Arial Black,{header_font_size},&H00FFFFFF,&H0000FFFF,&H00000000,&HE6111827,1,0,0,0,100,100,2,0,3,16,0,8,40,40,{header_margin_v},1
+Style: TopicHeader,Impact,{header_font_size},&H0000E5FF,&H0000FFFF,&H00000000,&H80000000,1,0,0,0,100,100,2,0,1,4.5,2.0,8,40,40,{header_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -226,16 +305,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         events = []
         total_duration = clip_duration if clip_duration and clip_duration > 0 else 60.0
 
-        # 1. Top Topic Headline Banner (Opus Clip Style)
-        if show_headline_banner:
-            headline_text_str = (topic_headline or "VIRAL PODCAST TOPIC").strip().upper()
-            if part_info:
-                headline_text_str += f" | {part_info.upper()}"
-
+        # 1. Top Viral Hook Engaging Headline Banner (High-CTR Yellow Impact Text, 0:00 to End)
+        if show_headline_banner and formatted_headline:
             h_start = cls.format_timestamp(0.0)
             h_end = cls.format_timestamp(total_duration)
-            banner_line = f"{{\\fad(250,0)}}[  {headline_text_str}  ]"
-            events.append(f"Dialogue: 1,{h_start},{h_end},TopicHeader,,0,0,0,,{banner_line}")
+            events.append(f"Dialogue: 1,{h_start},{h_end},TopicHeader,,0,0,0,,{banner_dialogue_line}")
 
         # 2. Filter and normalize spoken words relative to clip start
         normalized_words = []

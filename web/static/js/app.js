@@ -41,7 +41,9 @@ const I = {
   "chart": `<path d="M224,200h-8V40a8,8,0,0,0-8-8H152a8,8,0,0,0-8,8V80H96a8,8,0,0,0-8,8v40H48a8,8,0,0,0-8,8v64H32a8,8,0,0,0,0,16H224a8,8,0,0,0,0-16Z"/>`,
   "folder": `<path d="M245,110.64A16,16,0,0,0,232,104H216V88a16,16,0,0,0-16-16H130.67L102.94,51.2a16.14,16.14,0,0,0-9.6-3.2H40A16,16,0,0,0,24,64V208h0a8,8,0,0,0,8,8H211.1a8,8,0,0,0,7.59-5.47l28.49-85.47A16.05,16.05,0,0,0,245,110.64Z"/>`,
   "plug": `<path d="M237.66,18.34a8,8,0,0,0-11.32,0l-52.4,52.41-5.37-5.38a32.05,32.05,0,0,0-45.26,0L100,88.69l-6.34-6.35A8,8,0,0,0,82.34,93.66L88.69,100,65.37,123.31a32,32,0,0,0,0,45.26l5.38,5.37-52.41,52.4a8,8,0,0,0,11.32,11.32l52.4-52.41,5.37,5.38a32,32,0,0,0,45.26,0L156,167.31l6.34,6.35a8,8,0,0,0,11.32-11.32L167.31,156l23.32-23.31a32,32,0,0,0,0-45.26l-5.38-5.37,52.41-52.4A8,8,0,0,0,237.66,18.34Z"/>`,
-  "warn": `<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm-8-80V80a8,8,0,0,1,16,0v56a8,8,0,0,1-16,0Zm20,36a12,12,0,1,1-12-12A12,12,0,0,1,140,172Z"/>`
+  "warn": `<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm-8-80V80a8,8,0,0,1,16,0v56a8,8,0,0,1-16,0Zm20,36a12,12,0,1,1-12-12A12,12,0,0,1,140,172Z"/>`,
+  "cloud": `<path d="M192,96a64.07,64.07,0,0,0-58.67,38.67A48,48,0,0,0,88,128a48,48,0,0,0,0,96h104a64,64,0,0,0,0-128Z"/>`,
+  "globe": `<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm87.67,96H175.87c-1.89-28.79-11.83-54.89-26.65-72.93A88.19,88.19,0,0,1,215.67,120ZM128,40.16c14.28,18.06,23.59,44,24.18,79.84H103.82C104.41,84.15,113.72,58.22,128,40.16ZM40.33,120A88.19,88.19,0,0,1,106.78,47.07C92,65.11,82,91.21,80.13,120ZM40.33,136H80.13c1.89,28.79,11.83,54.89,26.65,72.93A88.19,88.19,0,0,1,40.33,136Zm87.67,79.84c-14.28-18.06-23.59-44-24.18-79.84h48.36C151.59,171.85,142.28,197.78,128,215.84Zm21.22-7.07C164,190.89,174,164.79,175.87,136h39.8A88.19,88.19,0,0,1,149.22,208.77Z"/>`
 };
 
 const ic = n => `<svg viewBox="0 0 256 256" aria-hidden="true">${I[n] || ""}</svg>`;
@@ -71,6 +73,7 @@ const S = {
     styles: { bounce: "Hormozi (Bounce)", hype: "MrBeast (Hype)", clean: "Modern Clean", cyber: "Cyber Neon" },
     layouts: { fit_canvas: "Fit Full Video (Hook + Captions)", face_center: "Smart Face Center", gameplay: "Active speaker tracking", split: "Split screen (Host/Guest)", blur: "Blurred fill", crop: "Fill screen" }
   },
+  gdrive: { connected: false, email: "", folder_name: "ClipForge Clips", has_credentials: false },
   sel: new Set(),
   expandedBriefs: new Set()
 };
@@ -93,13 +96,95 @@ const send = (path, body, method = "POST") => api(path, {
   body: JSON.stringify(body ?? {})
 });
 
-function toast(msg, kind = "ok") {
+function toast(msg, kind = "ok", title = "") {
   if (!msg) return;
+  const container = $("#toasts");
+  if (!container) return;
+
+  const icons = {
+    ok: "✓",
+    bad: "✕",
+    warn: "⚠️",
+    info: "ℹ️",
+    loading: "⏳"
+  };
+
+  const defaultTitles = {
+    ok: "Success",
+    bad: "Error",
+    warn: "Attention",
+    info: "Notice",
+    loading: "Processing"
+  };
+
   const t = document.createElement("div");
-  t.className = "toast " + kind;
-  t.textContent = msg;
-  $("#toasts").append(t);
-  setTimeout(() => t.remove(), kind === "bad" ? 6000 : 3200);
+  t.className = `toast toast-${kind}`;
+  t.setAttribute("role", "status");
+
+  const toastTitle = title || defaultTitles[kind] || "Notification";
+  const iconSymbol = icons[kind] || icons.ok;
+
+  t.innerHTML = `
+    <div class="toast-indicator">
+      <span class="toast-indicator-icon">${iconSymbol}</span>
+    </div>
+    <div class="toast-content">
+      <div class="toast-header">
+        <span class="toast-title">${esc(toastTitle)}</span>
+        <button type="button" class="toast-dismiss-btn" aria-label="Dismiss">&times;</button>
+      </div>
+      <div class="toast-msg">${esc(msg)}</div>
+    </div>
+    <div class="toast-progress"></div>
+  `;
+
+  // Dismiss button click
+  t.querySelector(".toast-dismiss-btn")?.addEventListener("click", () => {
+    t.classList.add("toast-leaving");
+    setTimeout(() => t.remove(), 200);
+  });
+
+  container.append(t);
+
+  // Auto-dismiss duration
+  const dur = kind === "bad" ? 6500 : (kind === "loading" ? 12000 : 3600);
+  const timer = setTimeout(() => {
+    t.classList.add("toast-leaving");
+    setTimeout(() => t.remove(), 250);
+  }, dur);
+
+  // Pause on hover
+  t.addEventListener("mouseenter", () => {
+    t.style.animationPlayState = "paused";
+    clearTimeout(timer);
+  });
+}
+
+function setStageLoading(active, msg = "Rendering with GPU NVENC...", sub = "Hardware Acceleration Active") {
+  const frame = $("#stageCanvasFrame");
+  if (!frame) return;
+  let overlay = $("#stageLoadingOverlay");
+  if (active) {
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.id = "stageLoadingOverlay";
+      overlay.className = "stage-loading-overlay";
+      overlay.innerHTML = `
+        <div class="stage-spinner-ring"></div>
+        <div class="stage-loading-msg">${esc(msg)}</div>
+        <div class="stage-loading-sub">${esc(sub)}</div>
+      `;
+      frame.appendChild(overlay);
+    } else {
+      const msgEl = overlay.querySelector(".stage-loading-msg");
+      const subEl = overlay.querySelector(".stage-loading-sub");
+      if (msgEl) msgEl.textContent = msg;
+      if (subEl) subEl.textContent = sub;
+      overlay.style.display = "flex";
+    }
+  } else if (overlay) {
+    overlay.style.display = "none";
+  }
 }
 
 const cache = new WeakMap();
@@ -178,7 +263,14 @@ function drawShell() {
 
   let act = "";
   if (S.view === "library" || S.view === "overview") {
-    act = `<a class="btn" href="https://github.com" target="_blank" rel="noopener">${ic("github")}<span>Star on GitHub</span></a>
+    const gdPill = S.gdrive?.connected
+      ? `<button type="button" class="gdrive-top-btn on" data-act="opengdrivetab" title="Google Drive: ${esc(S.gdrive.email || "")} (${esc(S.gdrive.folder_name || "ClipForge Clips")})">
+          <span style="color:#007588;font-weight:900">▲</span> <span>${esc(S.gdrive.email ? S.gdrive.email.split("@")[0] : "Drive Connected")}</span>
+         </button>`
+      : `<button type="button" class="gdrive-top-btn" data-act="opengdrivetab" title="Connect Google Drive to sync clips to your mobile phone for TikTok">
+          <span style="color:#007588;font-weight:900">▲</span> <span>Connect Drive</span>
+         </button>`;
+    act = `${gdPill}
            <button class="btn primary" data-act="focusurl">${ic("scissors")}Make clips</button>`;
   }
   put($("#actions"), act);
@@ -223,23 +315,76 @@ function go(v, tab) {
 }
 
 /* ============================================================ Composer Add Bar */
-const DRAFT = { link: null, file: null, busy: false };
+const DRAFT = { link: null, file: null, busy: false, activeTab: "youtube" };
 
 function drawAdd(variant) {
   const box = $("#add");
   if (!box) return;
+  const isYt = DRAFT.activeTab === "youtube";
+
   box.innerHTML = `
     <form class="composer ${variant === "hero" ? "big" : "compact"}" id="addform">
-      <div class="composer-input">
-        ${ic("link")}
-        <input id="url" placeholder="Paste a YouTube, Twitch or Kick video link" autocomplete="off" aria-label="Video link">
+      <!-- Minimalist Source Selector Tabs -->
+      <div class="composer-source-tabs" role="tablist">
+        <button type="button" class="source-tab ${isYt ? "active" : ""}" data-tab="youtube" role="tab" aria-selected="${isYt}">
+          <span class="source-tab-icon">${ic("link")}</span>
+          <span class="source-tab-label">YouTube / URL</span>
+          <span class="source-tab-badge">Instant</span>
+        </button>
+        <button type="button" class="source-tab ${!isYt ? "active" : ""}" data-tab="upload" role="tab" aria-selected="${!isYt}">
+          <span class="source-tab-icon">${ic("up")}</span>
+          <span class="source-tab-label">Upload Video</span>
+          <span class="source-tab-badge">MP4, MOV, MKV</span>
+        </button>
       </div>
+
+      <!-- Tab Content 1: YouTube / Web URL Stream Input -->
+      <div class="composer-pane" id="pane_youtube" style="display: ${isYt ? "block" : "none"}">
+        <div class="composer-input-wrap">
+          <div class="composer-input-field">
+            <span class="input-lens-icon">${ic("link")}</span>
+            <input id="url" type="url" placeholder="Paste YouTube link (e.g. https://youtube.com/watch?v=...)" autocomplete="off" aria-label="Video link" value="${DRAFT.link?.url || ""}">
+            ${DRAFT.link ? `<button type="button" class="input-clear-btn" data-act="clearlink" title="Clear link">${ic("x")}</button>` : ""}
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab Content 2: Minimalist Drag & Drop Zone -->
+      <div class="composer-pane" id="pane_upload" style="display: ${!isYt ? "block" : "none"}">
+        <div class="minimal-dropzone" id="composerDropzone" data-act="pickfile">
+          <div class="dropzone-glow-ring"></div>
+          <div class="dropzone-body">
+            <div class="dropzone-icon-bubble">${ic("up")}</div>
+            <div class="dropzone-text-group">
+              <span class="dropzone-main-text">Drag & drop your podcast or video file here</span>
+              <span class="dropzone-sub-text">or <strong class="dropzone-highlight">click to browse</strong> from your computer</span>
+            </div>
+            <div class="dropzone-format-tags">
+              <span>MP4</span><span>MOV</span><span>MKV</span><span>WEBM</span><span>Up to 4K</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Interactive File / Link Preview Card (Attachment) -->
       <div class="att" id="att"><div><div class="att-in" id="attIn"></div></div></div>
+
+      <!-- Enhanced Composer Bottom Action Bar -->
       <div class="composer-bar">
-        <button type="button" class="chip" data-act="pickfile">${ic("up")}Upload video</button>
-        <button type="button" class="chip" data-act="toggleopts" aria-expanded="false">${ic("sliders")}Options</button>
-        <span class="hint">or drop video file anywhere</span>
-        <button class="btn primary" id="goBtn" type="submit">${ic("scissors")}Make clips</button>
+        <div class="composer-quick-actions">
+          <button type="button" class="chip opts-toggle-chip" data-act="toggleopts" aria-expanded="false" id="btn_toggle_options">
+            ${ic("sliders")}
+            <span>Studio Settings</span>
+            <span class="chip-badge">AI Presets</span>
+          </button>
+          <span class="quick-summary-pill" id="composerQuickSummary">🎯 Auto-detect · 60-90s sweet spot · 5 clips</span>
+        </div>
+
+        <button class="btn primary make-clips-btn" id="goBtn" type="submit">
+          <span class="btn-shine"></span>
+          ${ic("scissors")}
+          <span>Make clips</span>
+        </button>
       </div>
 
       <!-- Expandable PeakCut Options Accordion -->
@@ -269,7 +414,7 @@ function drawAdd(variant) {
                 <span>Shortest</span>
                 <div class="ctl">
                   <button type="button" data-step="o_min" data-d="-5">${ic("minus")}</button>
-                  <input id="o_min" type="number" min="10" max="120" step="5" value="25"><i>s</i>
+                  <input id="o_min" type="number" min="10" max="300" step="5" value="60"><i>s</i>
                   <button type="button" data-step="o_min" data-d="5">${ic("plus")}</button>
                 </div>
               </div>
@@ -277,17 +422,28 @@ function drawAdd(variant) {
                 <span>Longest</span>
                 <div class="ctl">
                   <button type="button" data-step="o_maxlen" data-d="-5">${ic("minus")}</button>
-                  <input id="o_maxlen" type="number" min="15" max="180" step="5" value="65"><i>s</i>
+                  <input id="o_maxlen" type="number" min="15" max="600" step="5" value="90"><i>s</i>
                   <button type="button" data-step="o_maxlen" data-d="5">${ic("plus")}</button>
                 </div>
+              </div>
+            </div>
+
+            <!-- Quick Duration Targets -->
+            <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)">
+              <div style="font-size:11px;font-weight:700;color:var(--dim);margin-bottom:6px">Quick Duration Targets (AI prioritizes complete thoughts):</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <button type="button" class="btn sm dur-preset-btn" data-act="setdurpreset" data-min="30" data-max="60" style="font-size:11px;padding:3px 8px">⚡ 30–60s (Quick)</button>
+                <button type="button" class="btn sm dur-preset-btn on" data-act="setdurpreset" data-min="60" data-max="90" style="font-size:11px;padding:3px 8px;background:rgba(255,139,51,0.14);border:1px solid var(--brand);color:var(--brand);font-weight:800">🔥 60–90s (TikTok Sweet Spot)</button>
+                <button type="button" class="btn sm dur-preset-btn" data-act="setdurpreset" data-min="60" data-max="180" style="font-size:11px;padding:3px 8px">🎙️ 60–180s (Deep Dive)</button>
+                <button type="button" class="btn sm dur-preset-btn" data-act="setdurpreset" data-min="70" data-max="300" style="font-size:11px;padding:3px 8px">🎬 70–300s (Extended Story)</button>
               </div>
             </div>
           </div>
 
           <div class="ob wide">
             <label class="f">
-              <span class="ot" style="margin:0">Headline banner text <span style="font-weight:400">(optional)</span></span>
-              <input id="o_hook" maxlength="60" autocomplete="off" placeholder="Leave empty for AI to dynamically extract high-hook titles">
+              <span class="ot" style="margin:0">Headline banner text <span style="font-weight:400">(6–12 words recommended for top safe area)</span></span>
+              <input id="o_hook" maxlength="140" autocomplete="off" placeholder="e.g. WHY 99% OF PEOPLE FAIL AT THIS (AND HOW TO FIX IT)">
             </label>
           </div>
 
@@ -395,18 +551,25 @@ function drawAdd(variant) {
             </div>
 
             <!-- Safe Area & Spacing Controls + Real-Time TikTok 9:16 Layout Preview -->
-            <div class="composer-preview-section" id="composer_preview_section">
+            <div class="ob wide composer-preview-section" id="composer_preview_section">
               <div class="composer-preview-header">
-                <div style="display:flex;align-items:center;gap:8px">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18"/></svg>
-                  <span style="font-size:13px;font-weight:700;color:var(--text)">Live TikTok 9:16 Layout & Safe Area Preview</span>
-                  <span class="badge" style="background:rgba(255,139,51,0.15);color:var(--brand);font-size:10px;padding:2px 6px">Real-Time Framing</span>
+                <div style="display:flex;align-items:center;gap:10px">
+                  <div class="preview-icon-box">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M3 15h18"/></svg>
+                  </div>
+                  <div>
+                    <div style="display:flex;align-items:center;gap:8px">
+                      <span style="font-size:14px;font-weight:800;color:var(--text);letter-spacing:-0.01em">Live TikTok 9:16 Layout & Safe Area Preview</span>
+                      <span class="preview-live-badge"><span class="live-pulse-dot"></span>Real-Time Framing</span>
+                    </div>
+                    <div style="font-size:11.5px;color:var(--dim);margin-top:2px">Interact with live safe area padding, viral yellow hook position & TikTok overlay</div>
+                  </div>
                 </div>
-                <div style="display:flex;gap:6px">
-                  <button type="button" class="btn sm ghost" data-act="togglecomposertiktok" id="btn_toggle_tiktok_ui">
-                    ${ic("radio")}Toggle TikTok UI
+                <div style="display:flex;gap:8px;align-items:center">
+                  <button type="button" class="btn sm preview-tt-toggle-btn" data-act="togglecomposertiktok" id="btn_toggle_tiktok_ui">
+                    <span class="tt-toggle-dot"></span>Toggle TikTok UI
                   </button>
-                  <button type="button" class="btn sm" data-act="rendercomposerframe" style="background:linear-gradient(135deg,#FF8B33,#FFB800);color:#1E1612;font-weight:700">
+                  <button type="button" class="btn sm preview-render-btn" data-act="rendercomposerframe">
                     ${ic("film")}📸 Render Exact Frame
                   </button>
                 </div>
@@ -416,14 +579,14 @@ function drawAdd(variant) {
                 <!-- 9:16 Smartphone Mockup Stage -->
                 <div class="preview-stage-col">
                   <div class="tiktok-phone-mockup" id="composerPhoneMockup">
-                    <div class="phone-notch"><span class="notch-speaker"></span><span class="notch-lens"></span></div>
+                    <div class="phone-dynamic-island"><span class="island-lens"></span><span class="island-mic"></span></div>
                     
                     <!-- Top Safe Area Overlay with Live Topic Headline Banner -->
                     <div class="safe-pad-zone top" id="composerPadTop" style="height:0%;display:none">
                       <div class="preview-banner-wrap" id="composerPreviewBanner">
-                        <span class="preview-banner-pill">[ TOPIC HEADLINE BANNER ]</span>
+                        <span class="preview-banner-viral-pill">THE 'OUTLIVE' METHOD: THE 3 EXERCISES YOU NEED</span>
                       </div>
-                      <span class="pad-zone-tag" id="composerTagTop">Top Safe Area: 0%</span>
+                      <span class="pad-zone-tag" id="composerTagTop"><span class="tag-dot"></span>Top Safe Area: 0%</span>
                     </div>
 
                     <!-- Active Video Framing Center: Bounded by Top & Bottom Safe Areas -->
@@ -435,16 +598,19 @@ function drawAdd(variant) {
                     <!-- Bottom Safe Area Overlay with Animated Captions Preview -->
                     <div class="safe-pad-zone bottom" id="composerPadBottom" style="height:0%;display:none">
                       <div class="preview-caption-wrap" id="composerPreviewCaptions">
-                        <span class="preview-caption-chip">VIRAL <b style="color:#FFFF00">&nbsp;CAPTIONS</b></span>
+                        <span class="preview-caption-chip">VIRAL <b style="color:#FFE500">&nbsp;CAPTIONS 🔥</b></span>
                       </div>
-                      <span class="pad-zone-tag" id="composerTagBottom">Bottom Safe Area: 0%</span>
+                      <span class="pad-zone-tag" id="composerTagBottom"><span class="tag-dot"></span>Bottom Safe Area: 0%</span>
                     </div>
 
                     <!-- Authentic TikTok Social UI Overlay -->
                     <div class="tiktok-social-overlay on" id="composerTikTokOverlay">
                       <div class="tt-top-header">
-                        <span class="tt-tab">Following</span>
-                        <span class="tt-tab active">For You</span>
+                        <span class="tt-live-pill"><span class="tt-live-dot"></span>LIVE</span>
+                        <div class="tt-tabs">
+                          <span class="tt-tab">Following</span>
+                          <span class="tt-tab active">For You</span>
+                        </div>
                         <span class="tt-search">🔍</span>
                       </div>
                       <div class="tt-right-actions">
@@ -456,11 +622,14 @@ function drawAdd(variant) {
                         <div class="tt-action-btn disc"><div class="tt-disc"><span>🎵</span></div></div>
                       </div>
                       <div class="tt-bottom-meta">
-                        <div class="tt-creator-tag">@creator • ClipForge Studio</div>
-                        <div class="tt-caption-text">Why smart padding gives you 66% more view... #podcast #shorts #fyp</div>
+                        <div class="tt-creator-tag">@creator <span class="tt-verified">✓</span> • ClipForge Studio</div>
+                        <div class="tt-caption-text">Watch how smart 9:16 safe area padding preserves full widescreen content! 🚀 #viral #podcast #shorts #fyp</div>
                         <div class="tt-sound-bar"><span>🎵</span> <marquee scrollamount="3">original sound - ClipForge Studio High Retention Voice</marquee></div>
                       </div>
                     </div>
+
+                    <!-- Sleek Home Indicator Bar -->
+                    <div class="phone-home-indicator"></div>
                   </div>
                 </div>
 
@@ -468,26 +637,29 @@ function drawAdd(variant) {
                 <div class="preview-controls-col">
                   <!-- Quick Padding Presets -->
                   <div class="preset-section">
-                    <span class="preset-label">Quick Safe Area Presets:</span>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                      <span class="preset-label">⚡ Quick Safe Area Presets:</span>
+                      <span style="font-size:11px;color:var(--brand);font-weight:700">One-Click Optimal Padding</span>
+                    </div>
                     <div class="preset-pills-row">
                       <button type="button" class="preset-pill on" data-act="setcomposerpad" data-top="0" data-bottom="0">
-                        <b>0% Full 9:16</b>
+                        <span class="preset-title">0% Full 9:16</span>
                         <small>Max Zoom (31% kept)</small>
                       </button>
                       <button type="button" class="preset-pill" data-act="setcomposerpad" data-top="10" data-bottom="10">
-                        <b>10% + 10%</b>
+                        <span class="preset-title">10% + 10%</span>
                         <small>80% Area (42% kept)</small>
                       </button>
                       <button type="button" class="preset-pill" data-act="setcomposerpad" data-top="15" data-bottom="15">
-                        <b>15% + 15%</b>
+                        <span class="preset-title">15% + 15%</span>
                         <small>70% Area (47% kept)</small>
                       </button>
                       <button type="button" class="preset-pill star" data-act="setcomposerpad" data-top="20" data-bottom="20">
-                        <b>20% + 20% ⭐</b>
-                        <small>60% Area (53% kept)</small>
+                        <span class="preset-title">20% + 20% <span class="badge-rec">RECOMMENDED</span></span>
+                        <small>60% Area (+66% wider!)</small>
                       </button>
                       <button type="button" class="preset-pill" data-act="setcomposerpad" data-top="25" data-bottom="25">
-                        <b>25% + 25%</b>
+                        <span class="preset-title">25% + 25%</span>
                         <small>50% Area (60% kept)</small>
                       </button>
                     </div>
@@ -497,7 +669,10 @@ function drawAdd(variant) {
                   <div class="pad-control-grid">
                     <div class="pad-control-row">
                       <div class="pad-label-row">
-                        <span class="pad-label">Top Padding (Headline Banner Safe Zone)</span>
+                        <div class="pad-label-left">
+                          <span class="pad-icon-dot top"></span>
+                          <span class="pad-label">Top Padding (Viral Hook Safe Zone)</span>
+                        </div>
                         <div class="pad-val-box">
                           <input type="number" id="o_pad_top_num" class="pad-num-input" min="0" max="45" step="1" value="0">
                           <span class="pad-unit">%</span>
@@ -508,7 +683,10 @@ function drawAdd(variant) {
 
                     <div class="pad-control-row">
                       <div class="pad-label-row">
-                        <span class="pad-label">Bottom Padding (Captions & UI Safe Zone)</span>
+                        <div class="pad-label-left">
+                          <span class="pad-icon-dot bottom"></span>
+                          <span class="pad-label">Bottom Padding (Captions & TikTok UI Safe Zone)</span>
+                        </div>
                         <div class="pad-val-box">
                           <input type="number" id="o_pad_bottom_num" class="pad-num-input" min="0" max="45" step="1" value="0">
                           <span class="pad-unit">%</span>
@@ -518,33 +696,47 @@ function drawAdd(variant) {
                     </div>
                   </div>
 
-                  <!-- Live FOV, Aspect Ratio & Zoom Telemetry Card -->
+                  <!-- High-Tech Telemetry HUD Card -->
                   <div class="telemetry-card" id="composerTelemetry">
-                    <div class="telem-row">
-                      <span class="telem-k">Active Video Area</span>
-                      <span class="telem-v" id="o_active_area_val"><strong style="color:var(--brand)">100%</strong> of 9:16 Canvas</span>
+                    <div class="telem-header-row">
+                      <div style="display:flex;align-items:center;gap:6px">
+                        <span style="font-size:12px;color:var(--brand)">📐</span>
+                        <span class="telem-title">Framing & Retention Telemetry</span>
+                      </div>
+                      <span class="telem-badge-opt standard" id="o_fov_status_badge">Standard 9:16 Crop</span>
                     </div>
-                    <div class="telem-row">
-                      <span class="telem-k">Widescreen 16:9 View Preserved</span>
-                      <span class="telem-v" id="o_fov_val"><b>31.6%</b> of original width</span>
+                    
+                    <div class="telem-gauge-wrap" title="Active Visible Video Area on Screen">
+                      <div class="telem-gauge-bar" id="o_gauge_active_bar" style="width:100%"></div>
                     </div>
-                    <div class="telem-row">
-                      <span class="telem-k">Zoom Reduction</span>
-                      <span class="telem-v" id="o_zoom_gain_val">Standard 9:16 Cropping</span>
-                    </div>
-                    <div class="telem-row">
-                      <span class="telem-k">Safe Area Margins</span>
-                      <span class="telem-v" id="o_pad_summary">Top: 0px • Bottom: 0px</span>
+
+                    <div class="telem-metrics-grid">
+                      <div class="telem-metric-item">
+                        <span class="telem-k">Active Canvas</span>
+                        <span class="telem-v" id="o_active_area_val"><strong style="color:var(--brand)">100%</strong> (1920px)</span>
+                      </div>
+                      <div class="telem-metric-item">
+                        <span class="telem-k">Widescreen Kept</span>
+                        <span class="telem-v" id="o_fov_val"><strong style="color:var(--brand-deep)">31.6%</strong> of original width</span>
+                      </div>
+                      <div class="telem-metric-item">
+                        <span class="telem-k">Horizontal FOV Gain</span>
+                        <span class="telem-v" id="o_zoom_gain_val">Standard 9:16 Cropping</span>
+                      </div>
+                      <div class="telem-metric-item">
+                        <span class="telem-k">Safe Margins</span>
+                        <span class="telem-v" id="o_pad_summary">Top: 0px • Bottom: 0px</span>
+                      </div>
                     </div>
                   </div>
 
                   <!-- Interactive Tip on Widescreen Preservation -->
                   <div class="pad-explanation-box">
-                    <div style="font-size:12px;font-weight:700;color:var(--text);display:flex;align-items:center;gap:6px">
-                      <span style="color:#00E5FF">💡</span> Why Padding Preserves Content:
+                    <div style="font-size:12px;font-weight:800;color:var(--brand-ink);display:flex;align-items:center;gap:6px">
+                      <span style="color:var(--brand);font-size:14px">💡</span> Why Safe Area Padding Unlocks +66% More View:
                     </div>
-                    <div style="font-size:11.5px;color:var(--frame-dim);line-height:1.45;margin-top:4px">
-                      Without padding, converting 16:9 to 9:16 cuts off <b>68.4%</b> of the horizontal view. Setting <b>20% top & 20% bottom padding</b> yields a 60% active area, preserving <b>52.7%</b> of the widescreen view — giving you <b>+66% more visible width</b> with minimal zoom!
+                    <div style="font-size:11.5px;color:var(--dim);line-height:1.48;margin-top:5px">
+                      Converting standard 16:9 widescreen to vertical 9:16 directly cuts off <b>68.4%</b> of the visible video. Setting <b>20% top & 20% bottom padding</b> reserves dedicated safe space for the <b>Top Viral Yellow Hook</b> and <b>TikTok Captions</b>, preserving <b>52.7%</b> of original widescreen width (<strong style="color:var(--good)">+66% wider visual field</strong>) with zero awkward facial zoom!
                     </div>
                   </div>
                 </div>
@@ -674,6 +866,8 @@ function clipHtml(j, c) {
         <div class="clip-foot">
           <label class="selck" title="Select clip"><input type="checkbox" data-sel="${key}" ${S.sel.has(key) ? "checked" : ""}></label>
           ${videoSrc ? `<a class="btn sm icon ghost" href="${videoSrc}" download title="Download MP4">${ic("down")}</a>` : ""}
+          ${thumbSrc ? `<a class="btn sm icon ghost" href="${thumbSrc}" download="${esc(c.filename ? c.filename.replace(/\.[^.]+$/, '.jpg') : 'thumbnail.jpg')}" title="Download TikTok Cover Thumbnail (1080x1920 JPG)" style="font-size:13px;line-height:1">🖼️</a>` : ""}
+          <button type="button" class="btn sm icon ghost gdrive-card-btn" data-act="uploadgdrive" data-j="${j.id}" data-c="${c.id}" title="Upload to Google Drive (for mobile TikTok)">▲</button>
           <button class="btn sm icon ghost" data-act="copy" ${a} title="Copy social caption">${ic("copy")}</button>
           <button class="btn sm icon ghost" data-act="delclip" ${a} title="Delete">${ic("trash")}</button>
           <span style="flex:1"></span>
@@ -724,15 +918,14 @@ function jobHtml(j) {
         </div>
         <div class="row" style="gap:6px">
           ${hasBrief ? `<button class="btn sm" data-act="togglebrief" data-j="${j.id}">${briefExpanded ? "▲ Hide Brief" : "🧠 Executive Brief & Heatmap"}</button>` : ""}
-          ${clips.length ? `<button class="btn sm icon ghost" data-act="dlall" data-j="${j.id}" title="Download all clips ZIP">${ic("down")}</button>` : ""}
+          ${clips.length ? `<a class="btn sm ghost" href="/api/projects/${j.id}/download-docs" download title="Download Session Docs (.docx) with topics, titles & hashtags" style="font-size:11px;font-weight:600;padding:0 8px;gap:4px">📄 Docs</a>` : ""}
+          ${clips.length ? `<button class="btn sm icon ghost" data-act="dlall" data-j="${j.id}" title="Download all clips ZIP (with docs file)">${ic("down")}</button>` : ""}
           <button class="btn sm icon ghost" data-act="deljob" data-j="${j.id}" title="Delete project">${ic("trash")}</button>
           <label class="selck" title="Select project"><input type="checkbox" data-sel="j:${j.id}" ${S.sel.has("j:" + j.id) ? "checked" : ""}></label>
         </div>
       </div>
 
-      ${busy ? `
-        <div class="bar"><i style="width:${progressPct}%"></i></div>
-        <p class="sub">${esc(j.stage || "Processing pipeline...")} · ${progressPct}%</p>` : ""}
+      ${busy ? pipelineTrackerHtml(j, progressPct) : ""}
 
       <!-- Expandable Executive Podcast Brief & Heatmap -->
       ${hasBrief && briefExpanded ? briefHtml(j) : ""}
@@ -740,6 +933,82 @@ function jobHtml(j) {
       <!-- 9:16 Vertical Clip Cards -->
       ${clips.length ? `<div class="grid">${clips.map(c => clipHtml(j, c)).join("")}</div>` : ""}
     </section>`;
+}
+
+function pipelineTrackerHtml(j, pct) {
+  // Determine current active pipeline stage (1 to 5)
+  let activeStep = j.step_index || 1;
+  if (!j.step_index) {
+    if (pct < 30) activeStep = 1;
+    else if (pct < 45) activeStep = 2;
+    else if (pct < 65) activeStep = 3;
+    else if (pct < 85) activeStep = 4;
+    else activeStep = 5;
+  }
+
+  const stages = [
+    { num: 1, name: "Transcribe", label: "Whisper AI" },
+    { num: 2, name: "AI Topics", label: "Viral Arc" },
+    { num: 3, name: "Framing", label: "Safe Layout" },
+    { num: 4, name: "Subtitles", label: "Kinetic ASS" },
+    { num: 5, name: "Render & Covers", label: "NVENC / CPU" }
+  ];
+
+  const currentMsg = j.stage || j.status_message || "Processing video pipeline...";
+  const detailMsg = j.step_detail || currentMsg;
+
+  return `
+    <div class="pipeline-tracker-card">
+      <div class="pipeline-tracker-head">
+        <div class="pipeline-tracker-title">
+          <span class="pipeline-tracker-badge">
+            <span class="pipeline-pulse-dot"></span>
+            AI Studio Pipeline Active
+          </span>
+          <span style="font-size:12px;color:var(--dim);font-weight:600">Step ${activeStep} of 5: ${esc(stages[activeStep - 1]?.name || "Processing")}</span>
+        </div>
+        <div class="pipeline-tracker-pct">${pct}<span>%</span></div>
+      </div>
+
+      <!-- 5-Step Visual Stepper -->
+      <div class="pipeline-stepper-grid">
+        ${stages.map(s => {
+          let state = "pending";
+          let stateLabel = "Pending";
+          if (s.num < activeStep || pct >= 100) {
+            state = "done";
+            stateLabel = "Done ✓";
+          } else if (s.num === activeStep) {
+            state = "active";
+            stateLabel = "In Progress";
+          }
+          return `
+            <div class="pipeline-step-node ${state}">
+              <div class="step-node-header">
+                <span class="step-node-num">${state === "done" ? "✓" : s.num}</span>
+                <span class="step-node-state">${stateLabel}</span>
+              </div>
+              <span class="step-node-name">${s.name}</span>
+            </div>
+          `;
+        }).join("")}
+      </div>
+
+      <!-- Master Glowing Rail Progress Bar -->
+      <div class="pipeline-progress-rail">
+        <div class="pipeline-progress-fill" style="width:${Math.max(3, Math.min(100, pct))}%"></div>
+      </div>
+
+      <!-- Live Activity & Sub-step Telemetry -->
+      <div class="pipeline-activity-box">
+        <div class="pipeline-activity-info">
+          ${ic("bolt")}
+          <span class="pipeline-activity-text">${esc(currentMsg)}</span>
+        </div>
+        <span class="pipeline-activity-detail">${esc(detailMsg !== currentMsg ? detailMsg : "")}</span>
+      </div>
+    </div>
+  `;
 }
 
 function briefHtml(j) {
@@ -804,6 +1073,9 @@ function drawSelBar() {
     <b>${n} selected</b>
     <button class="btn sm" data-act="selall">Select all</button>
     <button class="btn sm primary" data-act="seldl">${ic("down")}Download ZIP</button>
+    <button class="btn sm" data-act="selgdrive" style="background:rgba(0,229,255,0.15);border:1px solid rgba(0,229,255,0.5);color:#00E5FF;font-weight:700">
+      <span style="font-weight:900">▲</span> Send to Drive (${n})
+    </button>
     <button class="btn sm danger" data-act="seldel">${ic("trash")}Delete</button>
     <button class="btn sm" data-act="selclear">Cancel</button>`;
 }
@@ -843,13 +1115,13 @@ function updateEditorPaddingPreview(topVal, bottomVal) {
   if (topOverlay) {
     topOverlay.style.height = `${topVal}%`;
     topOverlay.style.display = topVal > 0 ? "flex" : "none";
-    if (tagTop) tagTop.textContent = `Top Safe Area: ${topVal}% (${topPx}px)`;
+    if (tagTop) tagTop.innerHTML = `<span class="tag-dot"></span>Top Safe Area: ${topVal}% (${topPx}px)`;
   }
 
   if (bottomOverlay) {
     bottomOverlay.style.height = `${bottomVal}%`;
     bottomOverlay.style.display = bottomVal > 0 ? "flex" : "none";
-    if (tagBottom) tagBottom.textContent = `Bottom Safe Area: ${bottomVal}% (${botPx}px)`;
+    if (tagBottom) tagBottom.innerHTML = `<span class="tag-dot"></span>Bottom Safe Area: ${bottomVal}% (${botPx}px)`;
   }
 
   if (activeAreaVal) activeAreaVal.textContent = `${activeVal}% (${activeHPx}px)`;
@@ -898,31 +1170,49 @@ function updateComposerPaddingPreview(topVal, bottomVal) {
   if (topOverlay) {
     topOverlay.style.height = `${topVal}%`;
     topOverlay.style.display = topVal > 0 ? "flex" : "none";
-    if (tagTop) tagTop.textContent = `Top Safe Area: ${topVal}% (${topPx}px)`;
+    if (tagTop) tagTop.innerHTML = `<span class="tag-dot"></span>Top Safe Area: ${topVal}% (${topPx}px)`;
   }
 
   if (bottomOverlay) {
     bottomOverlay.style.height = `${bottomVal}%`;
     bottomOverlay.style.display = bottomVal > 0 ? "flex" : "none";
-    if (tagBottom) tagBottom.textContent = `Bottom Safe Area: ${bottomVal}% (${botPx}px)`;
+    if (tagBottom) tagBottom.innerHTML = `<span class="tag-dot"></span>Bottom Safe Area: ${bottomVal}% (${botPx}px)`;
   }
 
-  if (activeAreaVal) activeAreaVal.innerHTML = `<strong style="color:var(--brand)">${activeVal}%</strong> of Canvas (${activeHPx}px)`;
+  if (activeAreaVal) activeAreaVal.innerHTML = `<strong style="color:var(--brand)">${activeVal}%</strong> (${activeHPx}px)`;
   if (padSummary) padSummary.textContent = `Top: ${topPx}px • Bottom: ${botPx}px`;
-  if (fovVal) fovVal.innerHTML = `<b>${fovPct}%</b> of 16:9 width kept`;
+  if (fovVal) fovVal.innerHTML = `<strong style="color:var(--brand-deep)">${fovPct}%</strong> of widescreen kept`;
   if (zoomVal) {
     if (topVal === 0 && bottomVal === 0) {
-      zoomVal.textContent = "Standard 9:16 Cropping (High Zoom)";
+      zoomVal.innerHTML = `<span style="color:var(--dim)">Standard 9:16 Cropping</span>`;
     } else {
-      zoomVal.innerHTML = `<span style="color:#00FF66;font-weight:700">+${zoomGain}% More Content</span> (Minimal Zoom)`;
+      zoomVal.innerHTML = `<strong style="color:var(--good)">+${zoomGain}% Wider Field</strong> (Minimal Zoom)`;
+    }
+  }
+
+  const gaugeBar = $("#o_gauge_active_bar");
+  if (gaugeBar) gaugeBar.style.width = `${activeVal}%`;
+
+  const statusBadge = $("#o_fov_status_badge");
+  if (statusBadge) {
+    if (topVal >= 15 && bottomVal >= 15) {
+      statusBadge.textContent = "Optimal Widescreen (+66% FOV)";
+      statusBadge.className = "telem-badge-opt optimal";
+    } else if (topVal > 0 || bottomVal > 0) {
+      statusBadge.textContent = "Balanced Framing";
+      statusBadge.className = "telem-badge-opt balanced";
+    } else {
+      statusBadge.textContent = "Standard 9:16 Crop";
+      statusBadge.className = "telem-badge-opt standard";
     }
   }
 
   const bannerEl = $("#composerPreviewBanner");
   const bannerInput = $("#o_hook");
   if (bannerEl) {
-    const text = (bannerInput && bannerInput.value.trim()) ? bannerInput.value.trim().toUpperCase() : "THE 1 SECRET TO HIGH RETENTION";
-    bannerEl.innerHTML = `<span class="preview-banner-pill">[ ${esc(text)} ]</span>`;
+    let text = (bannerInput && bannerInput.value.trim()) ? bannerInput.value.trim().toUpperCase() : "THE REAL REASON 99% OF PEOPLE FAIL AT THIS HABIT";
+    text = text.replace(/[\[\]]/g, "").trim();
+    bannerEl.innerHTML = `<span class="preview-banner-viral-pill">${esc(text)}</span>`;
   }
 
   document.querySelectorAll("[data-act='setcomposerpad']").forEach(pill => {
@@ -941,6 +1231,7 @@ function openClip(jid, cid) {
 
   const dlg = $("#clipdlg");
   const videoSrc = c.output_file ? `/media/${j.id}/${encodeURIComponent(c.filename)}` : "";
+  const thumbSrc = c.cover ? `/media/${j.id}/${encodeURIComponent(c.cover)}` : (c.filename ? `/media/${j.id}/${encodeURIComponent(c.filename.replace(/\.[^.]+$/, '.jpg'))}` : "");
   const words = c.words || [];
   D.activeWords = JSON.parse(JSON.stringify(words));
   D.selectedWordIdx = null;
@@ -949,12 +1240,32 @@ function openClip(jid, cid) {
   const bottomPad = Math.max(0, Math.min(45, Number(c.bottom_padding || 0)));
   const activeArea = Math.max(20, 100 - topPad - bottomPad);
 
+  // Initialize Thumbnail Designer State for this clip
+  D.thumbStyle = "hormozi";
+  D.thumbColor = "#FFE600";
+  D.thumbArch = "curiosity";
+  D.thumbSec = Math.min((c.end || 30), (c.start || 0) + 1.2);
+
+  const initTopicWords = (c.title || "SUCCESS").trim().toUpperCase().split(/\s+/);
+  const defaultHl1 = "THE UNTOLD TRUTH";
+  const defaultHl2 = ("ABOUT " + (initTopicWords[0] || "THIS")).slice(0, 20);
+  const defaultCat = (initTopicWords[0] ? initTopicWords[0] + " PROTOCOL" : "PODCAST EXCLUSIVE").slice(0, 22);
+
   dlg.innerHTML = `
     <div class="editor">
-      <!-- Left Stage: 9:16 Vertical Player with Safe-Zone & Padding Overlays -->
+      <!-- Left Stage: 9:16 Vertical Player & TikTok Cover Studio Switcher -->
       <div class="stage" id="stage">
+        <div class="stage-mode-bar">
+          <button type="button" class="stage-tab-btn active" id="btn_stage_video" data-act="switchstagemode" data-mode="video">
+            ${ic("film")} Video Player
+          </button>
+          <button type="button" class="stage-tab-btn" id="btn_stage_thumb" data-act="switchstagemode" data-mode="thumb">
+            🖼️ TikTok Cover Studio
+          </button>
+        </div>
+
         <div class="stage-canvas-frame" id="stageCanvasFrame">
-          <!-- Full 9:16 Canvas Video Player (exact rendered MP4 output) -->
+          <!-- Video Player Mode -->
           <video id="editorVideo" src="${videoSrc}" controls autoplay playsinline style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:1;background:#0E0C0A"></video>
 
           <!-- Top Safe Area Shaded Overlay -->
@@ -978,221 +1289,331 @@ function openClip(jid, cid) {
             </div>
             <div class="safe-zone-bottom">@creator • Caption & Sound Area</div>
           </div>
+
+          <!-- TikTok Thumbnail Cover Studio Stage Overlay -->
+          <div class="thumb-studio-stage" id="thumbStudioStage" style="display:none">
+            <div class="thumb-preview-wrap">
+              <img id="editorThumbImg" class="thumb-preview-img" src="${thumbSrc || ''}" alt="TikTok Cover Thumbnail">
+
+              <!-- TikTok 3:4 Profile Grid Overlay Guide -->
+              <div class="tiktok-grid-guide" id="ttGridGuide" style="display:flex">
+                <span class="grid-guide-tag">📐 3:4 Profile Grid Safe Zone</span>
+                <span class="grid-guide-tag">Centered on Profile</span>
+              </div>
+
+              <!-- Authentic TikTok UI Overlay (Likes, Comments, Disc) -->
+              <div class="tiktok-mock-overlay" id="ttMockOverlay" style="display:flex">
+                <div class="tt-mock-actions">
+                  <div class="tt-mock-btn"><div class="tt-mock-icon">❤️</div><span class="tt-mock-count">142K</span></div>
+                  <div class="tt-mock-btn"><div class="tt-mock-icon">💬</div><span class="tt-mock-count">2,410</span></div>
+                  <div class="tt-mock-btn"><div class="tt-mock-icon">🔖</div><span class="tt-mock-count">18.5K</span></div>
+                  <div class="tt-mock-btn"><div class="tt-mock-icon">↗️</div><span class="tt-mock-count">6,920</span></div>
+                  <div class="tt-mock-disc"></div>
+                </div>
+                <div class="tt-mock-caption-zone">
+                  <div class="tt-mock-user">@clipforge_podcast ✓</div>
+                  <div class="tt-mock-desc">${esc(c.title || "Viral Podcast Highlight")} #podcast #viral</div>
+                  <div class="tt-mock-sound">♫ Original Sound - Trending Podcast</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Frame Timestamp Scrubber -->
+            <div class="thumb-scrubber-bar">
+              <span style="font-size:11px;font-weight:700;color:var(--dim);white-space:nowrap">📸 Frame:</span>
+              <input type="range" id="ed_thumb_sec" min="${c.start || 0}" max="${c.end || 30}" step="0.5" value="${D.thumbSec}" oninput="document.getElementById('ed_thumb_sec_val').textContent = Number(this.value).toFixed(1) + 's'; D.thumbSec = Number(this.value);">
+              <span id="ed_thumb_sec_val" style="font-size:11px;font-weight:800;color:var(--brand);min-width:32px">${D.thumbSec.toFixed(1)}s</span>
+              <button type="button" class="btn sm" data-act="grabthumbframe" data-c="${c.id}" style="padding:2px 8px;font-size:11px" title="Scrub & re-render cover with this speaker frame">Sample</button>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- Right Panel: Controls & Submagic Karaoke -->
+      <!-- Right Panel: Streamlined Tabbed Inspector -->
       <div class="panel">
-        <div class="job-head" style="margin:0">
-          <div>
+        <!-- Top Dialog Header -->
+        <div class="modal-dialog-header">
+          <div class="modal-header-meta">
             <span class="badge ${scoreCls(c.virality_score || 90)}" style="position:static">Score ${c.virality_score || 90} · High engagement hook</span>
-            <p class="sub" style="margin-top:6px">${esc(c.title || "Viral Clip")}</p>
+            <h3 class="modal-clip-title">${esc(c.title || "Viral Clip")}</h3>
           </div>
-          <button class="btn icon ghost" data-act="closedlg">${ic("x")}</button>
+          <button class="btn icon ghost modal-close-btn" data-act="closedlg" title="Close editor">${ic("x")}</button>
         </div>
 
-        <div class="row" style="justify-content:space-between">
-          <h3>On the video</h3>
-          <button class="btn sm ghost" data-act="togglesafezone">Toggle Safe Zones</button>
-        </div>
-
-        <!-- AI Intelligence & Viral Hooks Bar -->
-        <div style="display:flex;gap:6px;margin:6px 0 10px;align-items:center;flex-wrap:wrap">
-          <button type="button" class="btn sm" data-act="aihooks" style="background:linear-gradient(135deg,#FF8B33,#FFB800);color:#1E1612;font-weight:700">
-            ${ic("bolt")}⚡ AI Viral Hooks
+        <!-- Clean Navigation Tabs for Edit Modal -->
+        <div class="modal-subnav-tabs" role="tablist">
+          <button type="button" class="modal-tab-btn active" data-modaltab="video" role="tab">
+            ${ic("sliders")} Video & Framing
           </button>
-          <button type="button" class="btn sm ghost" data-act="aitranslate">
-            ${ic("globe")}Translate Subtitles
+          <button type="button" class="modal-tab-btn" data-modaltab="captions" role="tab">
+            ${ic("chat")} Captions & Words
           </button>
-          <button type="button" class="btn sm ghost" data-act="aibroll">
-            ${ic("film")}B-Roll & SFX Cues
+          <button type="button" class="modal-tab-btn" data-modaltab="cover" role="tab">
+            🖼️ Cover Studio
+          </button>
+          <button type="button" class="modal-tab-btn" data-modaltab="social" role="tab">
+            ${ic("send")} Social Copy
           </button>
         </div>
 
-        <div id="ai_hooks_panel" style="display:none;background:var(--muted);border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:10px"></div>
+        <!-- TAB 1: VIDEO & FRAMING -->
+        <div class="modal-tab-pane active" id="pane_modaltab_video">
+          <!-- Hook Text & Caption Style -->
+          <div class="modal-field-group">
+            <label class="f">Top Safe-Area Hook Banner (6–12 words recommended)
+              <input id="ed_hook" value="${esc(c.hook || c.title || "")}" maxlength="140" placeholder="e.g. THE REAL REASON 99% OF PEOPLE FAIL AT THIS...">
+            </label>
+          </div>
 
-        <label class="f">Big text hook<input id="ed_hook" value="${esc(c.hook || c.title || "")}"></label>
-        
-        <div class="two">
-          <label class="f">Caption style
-            <select id="ed_style">
-              <option value="hormozi" ${c.subtitle_style === "hormozi" ? "selected" : ""}>Hormozi Impact</option>
-              <option value="hype" ${c.subtitle_style === "hype" ? "selected" : ""}>MrBeast Neon</option>
-              <option value="cyber" ${c.subtitle_style === "cyber" ? "selected" : ""}>Cyber Glow</option>
-              <option value="clean" ${c.subtitle_style === "clean" ? "selected" : ""}>Clean Amber</option>
-            </select>
-          </label>
-          <label class="f">Layout & Framing
-            <select id="ed_layout" onchange="const fb=document.getElementById('ed_fit_options'); if(fb) fb.style.display=(this.value==='fit_canvas'?'block':'none'); const v=document.getElementById('editorVideo'); if(v) v.style.objectFit=(this.value==='fit_canvas'?'contain':'cover');">
-              <option value="fit_canvas" ${c.layout_mode === "fit_canvas" ? "selected" : ""}>Fit Full Video (Top Hook + Bottom Captions)</option>
-              <option value="face_center" ${c.layout_mode === "face_center" ? "selected" : ""}>Smart Face Center (Golden Ratio Eye-Line)</option>
-              <option value="speaker_focus" ${c.layout_mode === "speaker_focus" ? "selected" : ""}>YuNet Active Speaker (0.25s Whip Cut)</option>
-              <option value="split_screen" ${c.layout_mode === "split_screen" ? "selected" : ""}>Split-Screen Dual Stack (Host + Guest)</option>
-              <option value="blur" ${c.layout_mode === "blur" ? "selected" : ""}>Aesthetic Blurred Fill</option>
-              <option value="center_crop" ${c.layout_mode === "center_crop" ? "selected" : ""}>Center Crop (9:16)</option>
-            </select>
-          </label>
-        </div>
+          <div class="two">
+            <label class="f">Caption Style
+              <select id="ed_style">
+                <option value="hormozi" ${c.subtitle_style === "hormozi" ? "selected" : ""}>Hormozi Impact (Yellow & White)</option>
+                <option value="hype" ${c.subtitle_style === "hype" ? "selected" : ""}>MrBeast Neon (High Energy)</option>
+                <option value="cyber" ${c.subtitle_style === "cyber" ? "selected" : ""}>Cyber Glow (Neon Cyan)</option>
+                <option value="clean" ${c.subtitle_style === "clean" ? "selected" : ""}>Clean Amber (Editorial)</option>
+              </select>
+            </label>
+            <label class="f">Camera Layout & Framing
+              <select id="ed_layout" onchange="const fb=document.getElementById('ed_fit_options'); if(fb) fb.style.display=(this.value==='fit_canvas'?'block':'none'); const v=document.getElementById('editorVideo'); if(v) v.style.objectFit=(this.value==='fit_canvas'?'contain':'cover');">
+                <option value="fit_canvas" ${c.layout_mode === "fit_canvas" ? "selected" : ""}>Fit Full Video (Zero Crop)</option>
+                <option value="face_center" ${c.layout_mode === "face_center" ? "selected" : ""}>Smart Face Center</option>
+                <option value="speaker_focus" ${c.layout_mode === "speaker_focus" ? "selected" : ""}>Active Speaker Tracking</option>
+                <option value="split_screen" ${c.layout_mode === "split_screen" ? "selected" : ""}>Split-Screen (Host + Guest)</option>
+                <option value="blur" ${c.layout_mode === "blur" ? "selected" : ""}>Blurred Ambient Fill</option>
+                <option value="center_crop" ${c.layout_mode === "center_crop" ? "selected" : ""}>Center Crop (9:16)</option>
+              </select>
+            </label>
+          </div>
 
-        <!-- Safe Area & Spacing Controls in Clip Editor -->
-        <div class="safe-area-panel" id="ed_safe_area_panel">
-          <div class="safe-area-header">
-            <div class="safe-area-title">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18"/></svg>
-              <span>Safe Area & Spacing</span>
+          <!-- Safe Area & Spacing Controls in Clip Editor -->
+          <div class="safe-area-panel" id="ed_safe_area_panel">
+            <div class="safe-area-header">
+              <div class="safe-area-title">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18"/></svg>
+                <span>Safe Area & Padding</span>
+              </div>
+              <button type="button" class="btn-pad-reset" id="btn_pad_reset" data-act="reseteditorpad">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                Reset to 0%
+              </button>
             </div>
-            <button type="button" class="btn-pad-reset" id="btn_pad_reset" data-act="reseteditorpad">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-              Reset to 0%
+
+            <div class="preset-section" style="margin-bottom:10px">
+              <span class="preset-label">Quick Presets:</span>
+              <div class="preset-pills-row">
+                <button type="button" class="preset-pill ${topPad===0&&bottomPad===0?'on':''}" data-act="seteditorpad" data-top="0" data-bottom="0">
+                  <span class="preset-title">0% Full</span><small>Max Zoom</small>
+                </button>
+                <button type="button" class="preset-pill ${topPad===10&&bottomPad===10?'on':''}" data-act="seteditorpad" data-top="10" data-bottom="10">
+                  <span class="preset-title">10% + 10%</span><small>80% Area</small>
+                </button>
+                <button type="button" class="preset-pill ${topPad===15&&bottomPad===15?'on':''}" data-act="seteditorpad" data-top="15" data-bottom="15">
+                  <span class="preset-title">15% + 15%</span><small>70% Area</small>
+                </button>
+                <button type="button" class="preset-pill star ${topPad===20&&bottomPad===20?'on':''}" data-act="seteditorpad" data-top="20" data-bottom="20">
+                  <span class="preset-title">20% + 20% <span class="badge-rec">RECOMMENDED</span></span><small>60% Area</small>
+                </button>
+                <button type="button" class="preset-pill ${topPad===25&&bottomPad===25?'on':''}" data-act="seteditorpad" data-top="25" data-bottom="25">
+                  <span class="preset-title">25% + 25%</span><small>50% Area</small>
+                </button>
+              </div>
+            </div>
+            
+            <div class="pad-control-grid">
+              <div class="pad-control-row">
+                <div class="pad-label-row">
+                  <div class="pad-label-left">
+                    <span class="pad-icon-dot top"></span>
+                    <span class="pad-label">Top Padding (Hook Safe Area)</span>
+                  </div>
+                  <div class="pad-val-box">
+                    <input type="number" id="ed_pad_top_num" class="pad-num-input" min="0" max="45" step="1" value="${topPad}">
+                    <span class="pad-unit">%</span>
+                  </div>
+                </div>
+                <input type="range" id="ed_pad_top" class="pad-slider" min="0" max="45" step="1" value="${topPad}">
+              </div>
+
+              <div class="pad-control-row">
+                <div class="pad-label-row">
+                  <div class="pad-label-left">
+                    <span class="pad-icon-dot bottom"></span>
+                    <span class="pad-label">Bottom Padding (Captions Safe Area)</span>
+                  </div>
+                  <div class="pad-val-box">
+                    <input type="number" id="ed_pad_bottom_num" class="pad-num-input" min="0" max="45" step="1" value="${bottomPad}">
+                    <span class="pad-unit">%</span>
+                  </div>
+                </div>
+                <input type="range" id="ed_pad_bottom" class="pad-slider" min="0" max="45" step="1" value="${bottomPad}">
+              </div>
+            </div>
+
+            <div class="pad-active-bar">
+              <span>Active Framing: <strong id="ed_active_area_val" style="color:var(--brand)">${activeArea}%</strong> (<span id="ed_fov_val">${Math.min(100, Math.round(((1080 / Math.round(1920 * (activeArea / 100))) / (16/9)) * 1000) / 10)}% kept</span>)</span>
+              <span id="ed_pad_summary" style="font-size:10px;color:var(--frame-dim)">Top: ${Math.round(1920*topPad/100)}px • Bottom: ${Math.round(1920*bottomPad/100)}px</span>
+            </div>
+
+            <button type="button" class="btn sm" data-act="rendereditorframe" style="width:100%;margin-top:8px;background:rgba(255,139,51,0.12);border:1px solid rgba(255,139,51,0.4);color:var(--brand);font-weight:700">
+              ${ic("film")}📸 Snapshot Exact FFmpeg Rendered Frame
             </button>
           </div>
 
-          <div class="preset-section" style="margin-bottom:10px">
-            <span class="preset-label">Quick Presets:</span>
-            <div class="preset-pills-row">
-              <button type="button" class="preset-pill ${topPad===0&&bottomPad===0?'on':''}" data-act="seteditorpad" data-top="0" data-bottom="0">
-                <b>0% Full</b><small>Max Zoom</small>
-              </button>
-              <button type="button" class="preset-pill ${topPad===10&&bottomPad===10?'on':''}" data-act="seteditorpad" data-top="10" data-bottom="10">
-                <b>10% + 10%</b><small>80% Area</small>
-              </button>
-              <button type="button" class="preset-pill ${topPad===15&&bottomPad===15?'on':''}" data-act="seteditorpad" data-top="15" data-bottom="15">
-                <b>15% + 15%</b><small>70% Area</small>
-              </button>
-              <button type="button" class="preset-pill star ${topPad===20&&bottomPad===20?'on':''}" data-act="seteditorpad" data-top="20" data-bottom="20">
-                <b>20% + 20% ⭐</b><small>60% Area</small>
-              </button>
-              <button type="button" class="preset-pill ${topPad===25&&bottomPad===25?'on':''}" data-act="seteditorpad" data-top="25" data-bottom="25">
-                <b>25% + 25%</b><small>50% Area</small>
-              </button>
+          <div id="ed_fit_options" style="display:${(c.layout_mode === 'fit_canvas' || !c.layout_mode) ? 'block' : 'none'};background:#201712;border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:10px;margin-bottom:8px;color:#F8F3EF">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+              <span style="font-size:11.5px;font-weight:700">Top Space (Hook Placement)</span>
+              <span id="ed_top_space_val" style="font-size:12px;font-weight:800;color:var(--brand)">450px</span>
             </div>
-          </div>
-          
-          <div class="pad-control-grid">
-            <!-- Top Padding Control -->
-            <div class="pad-control-row">
-              <div class="pad-label-row">
-                <span class="pad-label">Top Padding</span>
-                <div class="pad-val-box">
-                  <input type="number" id="ed_pad_top_num" class="pad-num-input" min="0" max="45" step="1" value="${topPad}">
-                  <span class="pad-unit">%</span>
-                </div>
-              </div>
-              <input type="range" id="ed_pad_top" class="pad-slider" min="0" max="45" step="1" value="${topPad}">
-            </div>
-
-            <!-- Bottom Padding Control -->
-            <div class="pad-control-row">
-              <div class="pad-label-row">
-                <span class="pad-label">Bottom Padding</span>
-                <div class="pad-val-box">
-                  <input type="number" id="ed_pad_bottom_num" class="pad-num-input" min="0" max="45" step="1" value="${bottomPad}">
-                  <span class="pad-unit">%</span>
-                </div>
-              </div>
-              <input type="range" id="ed_pad_bottom" class="pad-slider" min="0" max="45" step="1" value="${bottomPad}">
+            <input type="range" id="ed_top_space" min="150" max="800" step="10" value="450" style="width:100%"
+              oninput="document.getElementById('ed_top_space_val').textContent = this.value + 'px'">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
+              <span style="font-size:11.5px;font-weight:700">Canvas Background</span>
+              <select id="ed_canvas_bg" style="font-size:11.5px;padding:3px 6px">
+                <option value="solid_black" selected>Studio Black (#0E0C0A) — 100% Solid Clean</option>
+                <option value="heavy_blur">Ultra-Heavy Ambient Blur</option>
+              </select>
             </div>
           </div>
 
-          <div class="pad-active-bar">
-            <span>Active Framing: <strong id="ed_active_area_val" style="color:var(--brand)">${activeArea}%</strong> (<span id="ed_fov_val">${Math.min(100, Math.round(((1080 / Math.round(1920 * (activeArea / 100))) / (16/9)) * 1000) / 10)}% kept</span>)</span>
-            <span id="ed_pad_summary" style="font-size:10px;color:var(--frame-dim)">Top: ${Math.round(1920*topPad/100)}px • Bottom: ${Math.round(1920*bottomPad/100)}px</span>
+          <div class="two">
+            <label class="f">Color Grading LUT
+              <select id="ed_color">
+                <option value="none">Natural (Original Colors)</option>
+                <option value="cinematic_pop" selected>Cinematic Pop (Vibrant Social Feed)</option>
+                <option value="moody_studio">Moody Studio (Dramatic Deep Shadows)</option>
+                <option value="clean_crisp">Clean Crisp (Sharpened Daylight)</option>
+                <option value="warm_golden">Warm Golden (Studio Amber Glow)</option>
+              </select>
+            </label>
+            <label class="f">Watermark / Creator Handle
+              <input id="ed_watermark" placeholder="@yourhandle (optional)" value="" maxlength="30">
+            </label>
           </div>
 
-          <button type="button" class="btn sm" data-act="rendereditorframe" style="width:100%;margin-top:8px;background:rgba(255,139,51,0.12);border:1px solid rgba(255,139,51,0.4);color:var(--brand);font-weight:700">
-            ${ic("film")}📸 Snapshot Exact FFmpeg Rendered Frame
-          </button>
-        </div>
-<div id="ed_fit_options" style="display:${(c.layout_mode === 'fit_canvas' || !c.layout_mode) ? 'block' : 'none'};background:var(--muted);border-radius:8px;padding:10px;margin-bottom:8px">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-            <span style="font-size:11.5px;font-weight:700">Top Space (Hook Placement)</span>
-            <span id="ed_top_space_val" style="font-size:12px;font-weight:800;color:var(--brand)">450px</span>
+          <div style="margin-bottom:8px">
+            <label class="sw"><input type="checkbox" id="ed_clarifier" checked><span style="color:#EDE4DE">Studio Voice Clarifier (FFT Denoising & Broadcast Normalizer)</span></label>
           </div>
-          <input type="range" id="ed_top_space" min="150" max="800" step="10" value="450" style="width:100%"
-            oninput="document.getElementById('ed_top_space_val').textContent = this.value + 'px'">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
-            <span style="font-size:11.5px;font-weight:700">Canvas Background</span>
-            <select id="ed_canvas_bg" style="font-size:11.5px;padding:3px 6px">
-              <option value="solid_black" selected>Studio Black (#0E0C0A) — 100% Solid Clean</option>
-              <option value="heavy_blur">Ultra-Heavy Ambient Blur</option>
-            </select>
+
+          <div class="two">
+            <label class="f">Start (seconds)<input id="ed_start" type="number" step="0.5" value="${c.start || 0}"></label>
+            <label class="f">End (seconds)<input id="ed_end" type="number" step="0.5" value="${c.end || 30}"></label>
           </div>
         </div>
 
-        <!-- Video Styling & Audio Polish -->
-        <div class="two">
-          <label class="f">Color Grading LUT
-            <select id="ed_color">
-              <option value="none">Natural (Original Colors)</option>
-              <option value="cinematic_pop" selected>Cinematic Pop (Vibrant Social Feed)</option>
-              <option value="moody_studio">Moody Studio (Dramatic Deep Shadows)</option>
-              <option value="clean_crisp">Clean Crisp (Sharpened Daylight)</option>
-              <option value="warm_golden">Warm Golden (Studio Amber Glow)</option>
-            </select>
-          </label>
-          <label class="f">Watermark / Creator Handle
-            <input id="ed_watermark" placeholder="@yourhandle (optional)" value="" maxlength="30">
-          </label>
+        <!-- TAB 2: CAPTIONS & WORD KARAOKE -->
+        <div class="modal-tab-pane" id="pane_modaltab_captions">
+          <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
+            <span style="font-size:12px;font-weight:700;color:#F8F3EF">Interactive Word Karaoke</span>
+            <span style="font-size:11px;color:#C8BCB4">Click any word to seek, correct, or color-tag</span>
+          </div>
+
+          <div class="karaoke-chips-flow" id="karaokeChips">
+            ${words.length ? words.map((w, idx) => `
+              <span class="word-chip ${w.color ? "hl-" + w.color : ""}" data-idx="${idx}" data-word="${esc(w.word)}" data-start="${w.start}" data-end="${w.end}">${esc(w.word)}</span>
+            `).join("") : `<span class="sub" style="color:#C8BCB4">Click words in video to seek</span>`}
+          </div>
+
+          <!-- Word Inspector Card -->
+          <div id="word_inspector" style="display:none;background:#201712;border:1px solid rgba(255,139,51,0.3);border-radius:8px;padding:12px;margin:10px 0;color:#F8F3EF">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <span style="font-size:12px;font-weight:700">Selected Word: <b id="inspect_word_label" style="color:var(--brand)"></b></span>
+              <button type="button" class="btn sm ghost" onclick="document.getElementById('word_inspector').style.display='none'">✕</button>
+            </div>
+            <div style="display:flex;gap:6px;margin-bottom:8px">
+              <input id="inspect_word_input" placeholder="Edit word text..." style="flex:1">
+              <button type="button" class="btn sm primary" data-act="applywordedit">Save Word Text</button>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+              <span style="font-size:11px;color:#C8BCB4">Color Tag:</span>
+              <button type="button" class="btn sm ghost" data-act="tagwordcolor" data-color="gold" style="color:#FFB800">● Gold</button>
+              <button type="button" class="btn sm ghost" data-act="tagwordcolor" data-color="green" style="color:#00FF55">● Green</button>
+              <button type="button" class="btn sm ghost" data-act="tagwordcolor" data-color="coral" style="color:#FF3333">● Red</button>
+              <button type="button" class="btn sm ghost" data-act="tagwordcolor" data-color="cyan" style="color:#00E5FF">● Cyan</button>
+              <button type="button" class="btn sm ghost" data-act="tagwordcolor" data-color="none" style="color:#C8BCB4">✕ None</button>
+              <span style="font-size:11px;color:#C8BCB4;margin-left:6px">Timeline:</span>
+              <button type="button" class="btn sm ghost" data-act="setwordstart" style="color:#EDE4DE">Set Start Cut</button>
+              <button type="button" class="btn sm ghost" data-act="setwordend" style="color:#EDE4DE">Set End Cut</button>
+            </div>
+          </div>
         </div>
 
-        <div style="margin-bottom:8px">
-          <label class="sw"><input type="checkbox" id="ed_clarifier" checked><span>Studio Voice Clarifier (FFT Denoising & Broadcast Normalizer)</span></label>
-        </div>
+        <!-- TAB 3: TIKTOK COVER STUDIO -->
+        <div class="modal-tab-pane" id="pane_modaltab_cover">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <div>
+              <h4 style="margin:0;font-size:13px;font-weight:700;color:#F8F3EF">Universal Editorial Cover Studio</h4>
+              <p class="sub" style="font-size:11.5px;color:#C8BCB4">Real speaker photography + bold left-aligned typography</p>
+            </div>
+            <button type="button" class="btn sm" data-act="aithumbhooks" data-c="${c.id}" style="background:linear-gradient(135deg,#FF8B33,#FFB800);color:#1E1612;font-weight:700;font-size:11px">
+              ${ic("bolt")}AI Hook Ideas
+            </button>
+          </div>
 
-        <div class="two">
-          <label class="f">Start (seconds)<input id="ed_start" type="number" step="0.5" value="${c.start || 0}"></label>
-          <label class="f">End (seconds)<input id="ed_end" type="number" step="0.5" value="${c.end || 30}"></label>
-        </div>
+          <!-- Dropdown/Panel for AI Suggested Thumbnail Hooks -->
+          <div id="ai_thumb_hooks_panel" style="display:none;background:#1E1510;border:1px solid rgba(255,139,51,0.3);border-radius:8px;padding:10px;margin-bottom:12px"></div>
 
-        <!-- Descript-Style Interactive Word Karaoke Flow -->
-        <div class="row" style="justify-content:space-between;align-items:center;margin-top:6px">
-          <h3>Interactive Word Karaoke Editor</h3>
-          <span style="font-size:11px;color:var(--frame-dim)">Click any word to seek, spell-correct, or tag color</span>
-        </div>
+          <div class="hook-archetypes-row" style="margin-bottom:12px">
+            <button type="button" class="hook-arch-pill on" data-act="setthumbarch" data-arch="curiosity">🤯 Curiosity Loop</button>
+            <button type="button" class="hook-arch-pill" data-act="setthumbarch" data-arch="warning">⚠️ Warning / Mistake</button>
+            <button type="button" class="hook-arch-pill" data-act="setthumbarch" data-arch="formula">📋 3-Rule Blueprint</button>
+            <button type="button" class="hook-arch-pill" data-act="setthumbarch" data-arch="callout">🎯 Audience Callout</button>
+          </div>
 
-        <div class="karaoke-chips-flow" id="karaokeChips">
-          ${words.length ? words.map((w, idx) => `
-            <span class="word-chip ${w.color ? "hl-" + w.color : ""}" data-idx="${idx}" data-word="${esc(w.word)}" data-start="${w.start}" data-end="${w.end}">${esc(w.word)}</span>
-          `).join("") : `<span class="sub">Click words in video to seek</span>`}
-        </div>
-
-        <!-- Word Inspector Card (appears when a word is clicked) -->
-        <div id="word_inspector" style="display:none;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:10px;margin:8px 0">
+          <!-- Accent Color Swatches -->
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-            <span style="font-size:12px;font-weight:700">Selected Word: <b id="inspect_word_label" style="color:var(--brand)"></b></span>
-            <button type="button" class="btn sm ghost" onclick="document.getElementById('word_inspector').style.display='none'">✕</button>
+            <span style="font-size:11.5px;font-weight:700">Keyword Highlight Accent Color</span>
+            <span id="thumb_color_label" style="font-size:11px;font-weight:800;color:#FFE600">Neon Yellow</span>
           </div>
-          <div style="display:flex;gap:6px;margin-bottom:8px">
-            <input id="inspect_word_input" placeholder="Edit word text..." style="flex:1">
-            <button type="button" class="btn sm primary" data-act="applywordedit">Save Word Text</button>
+          <div class="color-swatches-row" style="margin-bottom:12px">
+            <button type="button" class="color-swatch-btn on" data-act="setthumbcolor" data-color="#FFE600" data-name="Neon Yellow" style="background:#FFE600" title="Neon Yellow"></button>
+            <button type="button" class="color-swatch-btn" data-act="setthumbcolor" data-color="#22C55E" data-name="Electric Green" style="background:#22C55E" title="Electric Green"></button>
+            <button type="button" class="color-swatch-btn" data-act="setthumbcolor" data-color="#00E5FF" data-name="Electric Cyan" style="background:#00E5FF" title="Electric Cyan"></button>
+            <button type="button" class="color-swatch-btn" data-act="setthumbcolor" data-color="#FF3B30" data-name="Crimson Red" style="background:#FF3B30" title="Crimson Red"></button>
+            <button type="button" class="color-swatch-btn" data-act="setthumbcolor" data-color="#FFFFFF" data-name="Pure White" style="background:#FFFFFF" title="Pure White"></button>
           </div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-            <span style="font-size:11px;color:var(--frame-dim)">Color Tag:</span>
-            <button type="button" class="btn sm ghost" data-act="tagwordcolor" data-color="gold" style="color:#FFB800">● Gold</button>
-            <button type="button" class="btn sm ghost" data-act="tagwordcolor" data-color="green" style="color:#00FF55">● Green</button>
-            <button type="button" class="btn sm ghost" data-act="tagwordcolor" data-color="coral" style="color:#FF3333">● Red</button>
-            <button type="button" class="btn sm ghost" data-act="tagwordcolor" data-color="cyan" style="color:#00E5FF">● Cyan</button>
-            <button type="button" class="btn sm ghost" data-act="tagwordcolor" data-color="none">✕ None</button>
-            <span style="font-size:11px;color:var(--frame-dim);margin-left:6px">Timeline:</span>
-            <button type="button" class="btn sm ghost" data-act="setwordstart">Set Start Cut</button>
-            <button type="button" class="btn sm ghost" data-act="setwordend">Set End Cut</button>
+
+          <!-- Editable Headline & Text Fields -->
+          <div class="two">
+            <label class="f">Line 1 Hook (White)<input id="ed_thumb_hl1" value="${esc(defaultHl1)}" maxlength="22"></label>
+            <label class="f">Line 2 Punch (Accent Ribbon)<input id="ed_thumb_hl2" value="${esc(defaultHl2)}" maxlength="22"></label>
+          </div>
+          <div class="two">
+            <label class="f">Top Category Pill<input id="ed_thumb_cat" value="${esc(defaultCat)}" maxlength="24"></label>
+            <label class="f">Speaker / Authority Name<input id="ed_thumb_sub" value="LONGEVITY PROTOCOL" maxlength="40"></label>
+          </div>
+
+          <div style="margin-top:12px">
+            <button type="button" class="btn primary" style="width:100%" data-act="regen_thumb" data-c="${c.id}">
+              ${ic("bolt")}⚡ Render High-Res TikTok Cover (1080x1920)
+            </button>
           </div>
         </div>
 
-        <!-- Social Media Post Copy -->
-        <div class="row" style="justify-content:space-between;align-items:center;margin-top:4px">
-          <h3>Social Media Post Copy</h3>
-          <button class="btn sm" data-act="rewritetext">${ic("bolt")}AI Rewrite</button>
+        <!-- TAB 4: SOCIAL MEDIA POST COPY -->
+        <div class="modal-tab-pane" id="pane_modaltab_social">
+          <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
+            <span style="font-size:12px;font-weight:700;color:#F8F3EF">Optimized Caption Kit</span>
+            <button class="btn sm" data-act="rewritetext">${ic("bolt")}AI Rewrite</button>
+          </div>
+          <label class="f">Title<input id="ed_title" value="${esc(c.title || "")}"></label>
+          <label class="f">Description<textarea id="ed_desc" rows="3">${esc(c.description || (c.social_kit?.youtube_shorts?.description) || "")}</textarea></label>
+          <label class="f">Hashtags<input id="ed_tags" value="${esc((c.social_kit?.viral_hashtags || []).join(" "))}"></label>
         </div>
-        <label class="f">Title<input id="ed_title" value="${esc(c.title || "")}"></label>
-        <label class="f">Description<textarea id="ed_desc" rows="2">${esc(c.description || (c.social_kit?.youtube_shorts?.description) || "")}</textarea></label>
-        <label class="f">Hashtags<input id="ed_tags" value="${esc((c.social_kit?.viral_hashtags || []).join(" "))}"></label>
 
-        <button class="btn primary" data-act="remake">${ic("scissors")}Save & Re-Burn Clip (GPU NVENC ~1.5s)</button>
-
-        <div class="row" style="margin-top:auto;padding-top:10px;border-top:1px solid var(--line)">
+        <!-- Persistent Primary Action Footer -->
+        <div class="modal-persistent-footer">
+          <button class="btn primary reburn-clip-btn" data-act="remake">
+            <span class="btn-shine"></span>
+            ${ic("scissors")}
+            <span>Save & Re-Burn Clip</span>
+          </button>
           ${videoSrc ? `<a class="btn" id="ed_download_btn" href="${videoSrc}" download>${ic("down")}Download MP4</a>` : `<a class="btn" id="ed_download_btn" href="#" download style="display:none">${ic("down")}Download MP4</a>`}
-          <button class="btn" data-act="copydlg">${ic("copy")}Copy caption</button>
+          ${thumbSrc ? `<a class="btn" id="ed_thumb_btn" href="${thumbSrc}" download="${esc(c.filename ? c.filename.replace(/\.[^.]+$/, '.jpg') : 'thumbnail.jpg')}" title="Download TikTok Cover Thumbnail (1080x1920 JPG)">🖼️ Cover</a>` : ""}
+          <button type="button" class="btn gdrive-upload-btn" data-act="uploadgdrive" data-j="${j.id}" data-c="${c.id}">
+            <span style="font-weight:900">▲</span> Drive
+          </button>
+          <button class="btn" data-act="copydlg" title="Copy social caption">${ic("copy")}Copy</button>
         </div>
       </div>
     </div>`;
@@ -1207,6 +1628,7 @@ function drawSettings() {
   const tab = S.stab || "ai";
   const tabs = [
     ["ai", "AI", "bolt", "Local Ollama LLaMA 3.2 model & API"],
+    ["gdrive", "Google Drive", "cloud", "Sync clips to mobile for TikTok"],
     ["apps", "Connected apps", "plug", "Where your clips get posted"],
     ["speech", "Speech models", "chat", "faster-whisper GPU engine"],
     ["storage", "Storage", "folder", "Outputs directory & cache"]
@@ -1222,7 +1644,7 @@ function drawSettings() {
           </a>`).join("")}
       </nav>
       <div class="set-body" id="setbody">
-        ${tab === "ai" ? aiSettingsHtml() : tab === "apps" ? appsSettingsHtml() : tab === "speech" ? speechSettingsHtml() : storageSettingsHtml()}
+        ${tab === "ai" ? aiSettingsHtml() : tab === "gdrive" ? gdriveSettingsHtml() : tab === "apps" ? appsSettingsHtml() : tab === "speech" ? speechSettingsHtml() : storageSettingsHtml()}
       </div>
     </div>`;
 }
@@ -1253,6 +1675,104 @@ function aiSettingsHtml() {
         </label>
         <div class="row" style="margin-top:10px">
           <button class="btn primary" data-act="saveai">Save & Test Connection</button>
+        </div>
+      </div>
+    </section>`;
+}
+
+function gdriveSettingsHtml() {
+  const g = S.gdrive || { connected: false, folder_name: "ClipForge Clips" };
+  if (g.connected) {
+    return `
+    <section class="set-sec">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
+        <div>
+          <h2>Google Drive Cloud Sync</h2>
+          <p class="help">Sync your viral clips directly to Google Drive. Download instantly on your mobile phone to post to TikTok!</p>
+        </div>
+        <span class="pill ok" style="font-size:12px;padding:4px 10px"><span style="color:#00E5FF;font-weight:900">▲</span> Connected</span>
+      </div>
+
+      <div class="gdrive-status-card" style="background:#191410;border:1px solid rgba(0,229,255,0.3);border-radius:12px;padding:20px;margin:16px 0">
+        <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px">
+          <div style="width:48px;height:48px;border-radius:50%;background:rgba(0,229,255,0.15);display:flex;align-items:center;justify-content:center;font-size:24px;color:#00E5FF;font-weight:900">▲</div>
+          <div>
+            <div style="font-size:15px;font-weight:700;color:#F8F3EF">${esc(g.name || "Google Drive Account")}</div>
+            <div style="font-size:12.5px;color:#C8BCB4">${esc(g.email || "")}</div>
+          </div>
+        </div>
+
+        <div style="background:#110E0C;border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <span style="font-size:11px;text-transform:uppercase;color:#C8BCB4;font-weight:700;letter-spacing:0.04em">Destination Folder:</span>
+            <div style="font-size:14px;font-weight:600;color:#00E5FF;margin-top:2px">📁 ${esc(g.folder_name || "ClipForge Clips")}</div>
+          </div>
+          <a href="https://drive.google.com" target="_blank" rel="noopener" class="btn sm" style="background:rgba(255,139,51,0.15);color:var(--brand);border:1px solid rgba(255,139,51,0.3)">Open Google Drive ↗</a>
+        </div>
+
+        <div class="row" style="gap:10px">
+          <button type="button" class="btn sm danger" data-act="disconnectgdrive">Disconnect Account</button>
+        </div>
+      </div>
+
+      <div class="pad-explanation-box" style="margin-top:16px">
+        <div style="font-size:12px;font-weight:700;color:var(--text);display:flex;align-items:center;gap:6px">
+          <span>📱</span> Mobile TikTok Upload Workflow:
+        </div>
+        <div style="font-size:11.5px;color:var(--dim);line-height:1.55;margin-top:4px">
+          1. In ClipForge, click <b>▲ Upload to Google Drive</b> on any clip (or select multiple clips).<br>
+          2. Open the <b>Google Drive</b> app on your phone.<br>
+          3. Tap the video in your <b>ClipForge Clips</b> folder & select <b>"Save Video"</b> or <b>"Share to TikTok"</b>!
+        </div>
+      </div>
+    </section>`;
+  }
+
+  return `
+    <section class="set-sec">
+      <h2>Connect Google Drive</h2>
+      <p class="help">Connect Google Drive to upload clips with 1 click so you can download them directly on your phone and publish to TikTok!</p>
+
+      <div class="gdrive-setup-card" style="background:#191410;border:1px solid rgba(0,229,255,0.3);border-radius:12px;padding:20px;margin:16px 0">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+          <span style="font-size:28px;color:#00E5FF">▲</span>
+          <div>
+            <div style="font-size:15px;font-weight:700;color:#F8F3EF">Google Cloud OAuth Setup</div>
+            <div style="font-size:12px;color:#C8BCB4">Free personal Google Drive API access (takes ~2 minutes)</div>
+          </div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <label class="f" style="color:#EDE4DE">Destination Drive Folder Name
+            <input id="gd_folder" value="${esc(g.folder_name || "ClipForge Clips")}" placeholder="ClipForge Clips" style="background:#241A14;border:1px solid rgba(255,255,255,0.15);color:#FFFFFF">
+          </label>
+
+          <label class="f" style="color:#EDE4DE">Google OAuth Client ID
+            <input id="gd_client_id" placeholder="e.g. 123456789-xxxx.apps.googleusercontent.com" value="${esc(g.client_id || "")}" style="background:#241A14;border:1px solid rgba(255,255,255,0.15);color:#FFFFFF">
+          </label>
+
+          <label class="f" style="color:#EDE4DE">Google OAuth Client Secret
+            <input id="gd_client_secret" type="password" placeholder="e.g. GOCSPX-xxxx" style="background:#241A14;border:1px solid rgba(255,255,255,0.15);color:#FFFFFF">
+          </label>
+
+          <div class="row" style="margin-top:8px;gap:10px">
+            <button type="button" class="btn primary" data-act="connectgdrive" style="background:linear-gradient(135deg,#00E5FF,#00B0FF);color:#0E0C0A;font-weight:700">
+              <span style="font-weight:900">▲</span> Connect with Google Drive
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="pad-explanation-box">
+        <div style="font-size:12px;font-weight:700;color:var(--text);display:flex;align-items:center;gap:6px">
+          <span>💡</span> Quick 3-Step Setup Instructions:
+        </div>
+        <div style="font-size:11.5px;color:var(--dim);line-height:1.55;margin-top:6px">
+          1. Open <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener" style="color:#00E5FF;text-decoration:underline">Google Cloud Console</a> & enable the <b>Google Drive API</b>.<br>
+          2. Click <b>Create Credentials</b> → <b>OAuth client ID</b> → Application type: <b>Web application</b>.<br>
+          3. Under <b>Authorized redirect URIs</b>, enter:<br>
+             <code style="background:#110E0C;padding:3px 8px;border-radius:4px;color:#FFB800;display:inline-block;margin:4px 0">http://localhost:8000/api/gdrive/callback</code><br>
+          4. Copy your <b>Client ID</b> and <b>Client Secret</b> into the boxes above and click Connect!
         </div>
       </div>
     </section>`;
@@ -1365,10 +1885,12 @@ function render() {
 }
 
 function loop() {
+  const hasBusyJobs = (S.jobs || []).some(j => j.status === "queued" || j.status === "running");
+  const pollInterval = document.hidden ? 10000 : (hasBusyJobs ? 1000 : 3000);
   setTimeout(async () => {
     await tick();
     loop();
-  }, document.hidden ? 10000 : 3000);
+  }, pollInterval);
 }
 
 /* ============================================================ Event Handlers */
@@ -1378,6 +1900,7 @@ document.addEventListener("click", async e => {
   const a = b.dataset.act, d = b.dataset;
 
   if (a === "go") { go(d.v, d.tab); return; }
+  if (a === "bell") { toast("ClipForge Studio active. GPU NVENC engine and offline Ollama AI operational.", "ok", "System Status"); return; }
   if (a === "collapse") { $("#app").classList.toggle("mini"); return; }
   if (a === "menu") { $("#app").classList.toggle("open"); return; }
   if (a === "toggleopts") {
@@ -1488,8 +2011,9 @@ document.addEventListener("click", async e => {
   }
   if (a === "rendereditorframe") {
     b.disabled = true;
+    setStageLoading(true, "Sampling FFmpeg Layout Frame...", "Exact 1080x1920 Snapshot");
     try {
-      toast("Rendering exact 1080x1920 layout preview frame for this clip...", "ok");
+      toast("Rendering exact 1080x1920 layout preview frame for this clip...", "loading", "Rendering Preview");
       const topPad = Number($("#ed_pad_top")?.value || 0);
       const botPad = Number($("#ed_pad_bottom")?.value || 0);
       const layout = $("#ed_layout")?.value || "speaker_focus";
@@ -1509,11 +2033,12 @@ document.addEventListener("click", async e => {
       }
       prevImg.src = url;
       prevImg.style.display = "block";
-      toast("Exact layout snapshot rendered!", "ok");
+      toast("Exact layout snapshot rendered!", "ok", "Snapshot Ready");
     } catch (err) {
-      toast("Could not render frame: " + err.message, "bad");
+      toast("Could not render frame: " + err.message, "bad", "Preview Error");
     } finally {
       b.disabled = false;
+      setStageLoading(false);
     }
     return;
   }
@@ -1534,7 +2059,7 @@ document.addEventListener("click", async e => {
   if (a === "dlall") {
     const ids = (S.jobs.find(x => x.id === d.j)?.clips || []).map(c => d.j + "." + c.id);
     window.location.href = "/api/clips.zip?ids=" + encodeURIComponent(ids.join(","));
-    toast("Preparing ZIP archive...", "ok");
+    toast("Preparing ZIP archive with clips & docs file...", "ok");
     return;
   }
   if (a === "copy" || a === "copydlg") {
@@ -1576,6 +2101,131 @@ document.addEventListener("click", async e => {
     S.sel.clear();
     toast("Selected items deleted", "ok");
     tick();
+    return;
+  }
+  if (a === "opengdrivetab") {
+    go("settings", "gdrive");
+    drawSettings();
+    return;
+  }
+  if (a === "connectgdrive") {
+    const cid = $("#gd_client_id")?.value?.trim() || "";
+    const sec = $("#gd_client_secret")?.value?.trim() || "";
+    const folder = $("#gd_folder")?.value?.trim() || "ClipForge Clips";
+    b.disabled = true;
+    try {
+      toast("Saving Google Drive settings...", "ok");
+      const cfgRes = await send("/api/gdrive/configure", {
+        client_id: cid,
+        client_secret: sec,
+        folder_name: folder
+      });
+      if (cfgRes?.auth_url) {
+        toast("Opening Google authentication...", "ok");
+        window.open(cfgRes.auth_url, "gdrive_auth", "width=560,height=680");
+        const pollTimer = setInterval(async () => {
+          try {
+            const st = await api("/api/gdrive/status");
+            if (st && st.connected) {
+              clearInterval(pollTimer);
+              S.gdrive = st;
+              toast("⚡ Google Drive connected successfully! Ready to sync clips to your phone.", "ok");
+              drawSettings();
+              rTopBar();
+            }
+          } catch {}
+        }, 1800);
+        setTimeout(() => clearInterval(pollTimer), 120000);
+      } else {
+        toast("Please provide both Google OAuth Client ID and Secret to connect.", "bad");
+      }
+    } catch (err) {
+      toast(err.message, "bad");
+    } finally {
+      b.disabled = false;
+    }
+    return;
+  }
+  if (a === "disconnectgdrive") {
+    if (!await ask("Disconnect Google Drive?", "Cloud syncing will be paused until you reconnect.", "Disconnect", true)) return;
+    b.disabled = true;
+    try {
+      await api("/api/gdrive/disconnect", { method: "POST" });
+      S.gdrive = { connected: false, email: "", folder_name: "ClipForge Clips", has_credentials: false };
+      toast("Google Drive disconnected.", "ok");
+      drawSettings();
+      rTopBar();
+    } catch (err) {
+      toast(err.message, "bad");
+    } finally {
+      b.disabled = false;
+    }
+    return;
+  }
+  if (a === "uploadgdrive") {
+    b.disabled = true;
+    try {
+      const st = await api("/api/gdrive/status");
+      S.gdrive = st || S.gdrive;
+      if (!st || !st.connected) {
+        if (await ask("Connect Google Drive", "Google Drive is not connected yet. Connect it now to upload clips directly to your phone for TikTok?", "Connect Drive")) {
+          go("settings", "gdrive");
+          drawSettings();
+        }
+        return;
+      }
+      toast(`Uploading clip to Google Drive (${st.folder_name || "ClipForge Clips"})...`, "ok");
+      const res = await send("/api/gdrive/upload", { cid: d.c, jid: d.j, clip_id: d.c });
+      if (res && res.status === "success" && res.results?.[0]) {
+        const item = res.results[0];
+        toast(`✅ Uploaded "${item.title}" to Google Drive (${res.folder_name})! Ready on your phone for TikTok.`, "ok");
+      } else {
+        throw new Error(res?.results?.[0]?.error || "Upload failed. Check server logs.");
+      }
+    } catch (err) {
+      toast("Drive upload: " + err.message, "bad");
+    } finally {
+      b.disabled = false;
+    }
+    return;
+  }
+  if (a === "selgdrive") {
+    b.disabled = true;
+    try {
+      const st = await api("/api/gdrive/status");
+      S.gdrive = st || S.gdrive;
+      if (!st || !st.connected) {
+        if (await ask("Connect Google Drive", "Connect Google Drive to upload your selected clips to your mobile phone for TikTok.", "Connect Drive")) {
+          go("settings", "gdrive");
+          drawSettings();
+        }
+        return;
+      }
+      const clipIds = [];
+      for (const key of S.sel) {
+        const p = key.split(":");
+        if (p[0] === "c") clipIds.push(p[2]);
+        else if (p[0] === "j") {
+          const j = S.jobs.find(x => x.id === p[1]);
+          if (j && j.clips) clipIds.push(...j.clips.map(c => c.id));
+        }
+      }
+      if (!clipIds.length) {
+        toast("No clips selected to upload.", "bad");
+        return;
+      }
+      toast(`Uploading ${clipIds.length} clips to Google Drive (${st.folder_name})...`, "ok");
+      const res = await send("/api/gdrive/upload", { clip_ids: clipIds });
+      if (res && res.uploaded_count > 0) {
+        toast(`✅ Uploaded ${res.uploaded_count} clips to Google Drive (${res.folder_name})! Ready on your phone for TikTok.`, "ok");
+      } else {
+        throw new Error(res?.results?.[0]?.error || "Upload failed for selected clips.");
+      }
+    } catch (err) {
+      toast("Drive batch upload: " + err.message, "bad");
+    } finally {
+      b.disabled = false;
+    }
     return;
   }
   if (a === "cliptopic") {
@@ -1767,10 +2417,241 @@ document.addEventListener("click", async e => {
     }
     return;
   }
-  if (a === "remake") {
+  if (a === "setdurpreset") {
+    const minVal = Number(d.min);
+    const maxVal = Number(d.max);
+    if ($("#o_min")) $("#o_min").value = minVal;
+    if ($("#o_maxlen")) $("#o_maxlen").value = maxVal;
+    document.querySelectorAll(".dur-preset-btn").forEach(btn => {
+      const isThis = Number(btn.getAttribute("data-min")) === minVal && Number(btn.getAttribute("data-max")) === maxVal;
+      btn.classList.toggle("on", isThis);
+      btn.style.background = isThis ? "rgba(255,139,51,0.14)" : "";
+      btn.style.borderColor = isThis ? "var(--brand)" : "";
+      btn.style.color = isThis ? "var(--brand)" : "";
+      btn.style.fontWeight = isThis ? "800" : "500";
+    });
+    toast(`Duration set: ${minVal}s to ${maxVal}s (AI prioritizes complete thoughts in 60–90s sweet spot)`, "ok");
+    return;
+  }
+  if (a === "switchstagemode") {
+    const mode = d.mode;
+    const v = $("#editorVideo");
+    const ts = $("#thumbStudioStage");
+    const tc = $("#thumbStudioControls");
+    const vc = $("#videoControlsSection");
+    const bV = $("#btn_stage_video");
+    const bT = $("#btn_stage_thumb");
+    const safeZone = $("#editorSafeZone");
+    const padTop = $("#previewPadTop");
+    const padBot = $("#previewPadBottom");
+
+    if (mode === "thumb") {
+      if (v) { v.pause(); v.style.display = "none"; }
+      if (safeZone) safeZone.style.display = "none";
+      if (padTop) padTop.style.display = "none";
+      if (padBot) padBot.style.display = "none";
+      if (ts) ts.style.display = "flex";
+      if (tc) tc.style.display = "block";
+      if (vc) vc.style.display = "none";
+      if (bV) bV.classList.remove("active");
+      if (bT) bT.classList.add("active");
+    } else {
+      if (v) v.style.display = "block";
+      if (ts) ts.style.display = "none";
+      if (tc) tc.style.display = "none";
+      if (vc) vc.style.display = "block";
+      if (bV) bV.classList.add("active");
+      if (bT) bT.classList.remove("active");
+    }
+    return;
+  }
+  if (a === "togglettguide") {
+    const gg = $("#ttGridGuide");
+    const mo = $("#ttMockOverlay");
+    if (gg && mo) {
+      const isVisible = gg.style.display !== "none";
+      gg.style.display = isVisible ? "none" : "flex";
+      mo.style.display = isVisible ? "none" : "flex";
+      toast(isVisible ? "TikTok 3:4 profile grid & UI hidden" : "TikTok 3:4 profile grid & UI visible", "ok");
+    }
+    return;
+  }
+  if (a === "setthumbstyle") {
+    D.thumbStyle = d.style;
+    document.querySelectorAll(".thumb-style-card").forEach(c => {
+      c.classList.toggle("on", c.getAttribute("data-style") === d.style);
+    });
+    toast(`Selected ${d.style.replace('_', ' ').toUpperCase()} style. Click Render to apply.`, "ok");
+    return;
+  }
+  if (a === "setthumbcolor") {
+    D.thumbColor = d.color;
+    document.querySelectorAll(".color-swatch-btn").forEach(s => {
+      s.classList.toggle("on", s.getAttribute("data-color") === d.color);
+    });
+    const lbl = $("#thumb_color_label");
+    if (lbl) {
+      lbl.textContent = d.name || d.color;
+      lbl.style.color = d.color;
+    }
+    toast(`Accent color set to ${d.name || d.color}`, "ok");
+    return;
+  }
+  if (a === "setthumbarch") {
+    D.thumbArch = d.arch;
+    document.querySelectorAll(".hook-arch-pill").forEach(p => {
+      p.classList.toggle("on", p.getAttribute("data-arch") === d.arch);
+    });
+    const topic = ($("#ed_title")?.value || "SUCCESS").trim().toUpperCase();
+    const words = topic.split(/\s+/);
+    const core = words[0] || "THIS";
+    const hl1Inp = $("#ed_thumb_hl1");
+    const hl2Inp = $("#ed_thumb_hl2");
+    const subInp = $("#ed_thumb_sub");
+
+    if (d.arch === "warning") {
+      if (hl1Inp) hl1Inp.value = "STOP MAKING THIS";
+      if (hl2Inp) hl2Inp.value = `${core} MISTAKE`.slice(0, 20);
+      if (subInp) subInp.value = "Why 99% of people fail at this";
+    } else if (d.arch === "formula") {
+      if (hl1Inp) hl1Inp.value = "THE 3 RULES OF";
+      if (hl2Inp) hl2Inp.value = `${core} MASTERY`.slice(0, 20);
+      if (subInp) subInp.value = "The step-by-step formula";
+    } else if (d.arch === "callout") {
+      if (hl1Inp) hl1Inp.value = "IF YOU WANT";
+      if (hl2Inp) hl2Inp.value = `REAL ${core}`.slice(0, 20);
+      if (subInp) subInp.value = "Watch before this gets deleted";
+    } else {
+      if (hl1Inp) hl1Inp.value = "THE UNTOLD TRUTH";
+      if (hl2Inp) hl2Inp.value = `ABOUT ${core}`.slice(0, 20);
+      if (subInp) subInp.value = "What 99% of people miss";
+    }
+    toast(`Applied ${d.arch.toUpperCase()} hook template!`, "ok");
+    return;
+  }
+  if (a === "aithumbhooks") {
     b.disabled = true;
     try {
-      toast("Re-burning clip with GPU NVENC hardware acceleration...", "ok");
+      toast("Querying AI for 4 viral TikTok thumbnail hook archetypes...", "ok");
+      const cid = d.c || D.cid;
+      const res = await send(`/api/clips/${cid}/thumbnail/generate-hooks`, {
+        topic: $("#ed_title")?.value || $("#ed_hook")?.value || "",
+        hook: $("#ed_desc")?.value || $("#ed_hook")?.value || ""
+      });
+      const panel = $("#ai_thumb_hooks_panel");
+      if (panel && res.hooks && res.hooks.length) {
+        panel.style.display = "block";
+        panel.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="font-size:12px;font-weight:700;color:var(--brand)">⚡ AI TikTok Hook Formulas</span>
+            <button type="button" class="btn sm ghost" onclick="document.getElementById('ai_thumb_hooks_panel').style.display='none'">✕</button>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            ${res.hooks.map(h => `
+              <button type="button" class="btn sm ghost" data-act="applythumbhook"
+                data-cat="${esc(h.category || '')}"
+                data-hl1="${esc(h.headline_1 || '')}"
+                data-hl2="${esc(h.headline_2 || '')}"
+                data-sub="${esc(h.subheadline || '')}"
+                style="justify-content:flex-start;text-align:left;font-size:11.5px;padding:8px 10px;background:#241A14;border:1px solid rgba(255,255,255,0.12);border-radius:6px;flex-direction:column;align-items:flex-start;gap:2px">
+                <div style="display:flex;justify-content:space-between;width:100%">
+                  <span style="font-size:10px;font-weight:800;color:var(--brand)">${esc(h.label || h.archetype)}</span>
+                  <span style="font-size:9.5px;color:var(--frame-dim)">[Click to apply]</span>
+                </div>
+                <div style="font-size:12px;font-weight:900;color:#F8F3EF">${esc(h.headline_1)} <span style="color:#FFE600">${esc(h.headline_2)}</span></div>
+                <div style="font-size:10.5px;color:#C8BCB4">${esc(h.subheadline)}</div>
+              </button>
+            `).join("")}
+          </div>
+        `;
+        toast("Loaded 4 viral TikTok thumbnail hooks!", "ok");
+      }
+    } catch(err) {
+      toast("Error generating thumbnail hooks: " + (err.message || err), "bad");
+    } finally {
+      b.disabled = false;
+    }
+    return;
+  }
+  if (a === "applythumbhook") {
+    if ($("#ed_thumb_cat")) $("#ed_thumb_cat").value = d.cat || "";
+    if ($("#ed_thumb_hl1")) $("#ed_thumb_hl1").value = d.hl1 || "";
+    if ($("#ed_thumb_hl2")) $("#ed_thumb_hl2").value = d.hl2 || "";
+    if ($("#ed_thumb_sub")) $("#ed_thumb_sub").value = d.sub || "";
+    const p = $("#ai_thumb_hooks_panel");
+    if (p) p.style.display = "none";
+    toast("Hook loaded! Click 'Render Cover' to apply.", "ok");
+    return;
+  }
+  if (a === "grabthumbframe") {
+    D.thumbSec = Number($("#ed_thumb_sec")?.value || 1.2);
+    toast(`Sampling video frame at ${D.thumbSec.toFixed(1)}s...`, "ok");
+    a = "regen_thumb";
+  }
+  if (a === "regen_thumb") {
+    b.disabled = true;
+    b.classList.add("loading");
+    setStageLoading(true, "Designing Editorial Cover (1080x1920)...", "Real Face Extraction & Typography");
+    try {
+      toast("Designing high-res AI editorial cover (1080x1920)...", "loading", "Cover Studio");
+      const cid = d.c || D.cid;
+      const res = await send(`/api/clips/${cid}/thumbnail/regenerate`, {
+        topic: $("#ed_title")?.value || "",
+        hook: $("#ed_desc")?.value || $("#ed_hook")?.value || "",
+        category: $("#ed_thumb_cat")?.value || "",
+        headline_1: $("#ed_thumb_hl1")?.value || "",
+        headline_2: $("#ed_thumb_hl2")?.value || "",
+        subheadline: $("#ed_thumb_sub")?.value || "",
+        style: D.thumbStyle || "hormozi",
+        accent_color: D.thumbColor || "#FFE600",
+        archetype: D.thumbArch || "curiosity",
+        timestamp_sec: D.thumbSec || Number($("#ed_thumb_sec")?.value || 1.2)
+      });
+      if (res && res.thumbnail_url) {
+        toast("✨ Professional TikTok cover thumbnail rendered!", "ok", "Cover Ready");
+        const img = $("#editorThumbImg");
+        if (img) {
+          img.src = res.thumbnail_url;
+        }
+        const thumbBtn = $("#ed_thumb_btn");
+        if (thumbBtn) {
+          thumbBtn.href = res.thumbnail_url;
+          thumbBtn.style.display = "inline-flex";
+        }
+        const ts = $("#thumbStudioStage");
+        const tc = $("#thumbStudioControls");
+        const v = $("#editorVideo");
+        const vc = $("#videoControlsSection");
+        const bV = $("#btn_stage_video");
+        const bT = $("#btn_stage_thumb");
+        if (ts && ts.style.display === "none") {
+          if (v) { v.pause(); v.style.display = "none"; }
+          ts.style.display = "flex";
+          if (tc) tc.style.display = "block";
+          if (vc) vc.style.display = "none";
+          if (bV) bV.classList.remove("active");
+          if (bT) bT.classList.add("active");
+        }
+        const cardImg = document.querySelector(`button[data-c="${cid}"] img`);
+        if (cardImg) {
+          cardImg.src = res.thumbnail_url;
+        }
+      }
+    } catch(err) {
+      toast("Error generating thumbnail: " + (err.message || err), "bad", "Studio Error");
+    } finally {
+      b.disabled = false;
+      b.classList.remove("loading");
+      setStageLoading(false);
+    }
+    return;
+  }
+  if (a === "remake") {
+    b.disabled = true;
+    b.classList.add("loading");
+    setStageLoading(true, "Re-burning Vertical Clip...", "GPU NVENC Hardware Acceleration");
+    try {
+      toast("Re-burning vertical clip with GPU NVENC hardware acceleration...", "loading", "Rendering Clip");
       const topPadVal = Number($("#ed_pad_top")?.value || 0);
       const botPadVal = Number($("#ed_pad_bottom")?.value || 0);
       const res = await send(`/api/jobs/${D.jid}/clips/${D.cid}/render`, {
@@ -1788,7 +2669,7 @@ document.addEventListener("click", async e => {
         voice_clarifier: $("#ed_clarifier") ? $("#ed_clarifier").checked : true,
         words: D.activeWords || []
       });
-      toast("Clip re-burn complete!", "ok");
+      toast("✨ Clip re-burn complete and ready to export!", "ok", "Render Ready");
       if (res && res.file) {
         const newSrc = `/media/${D.jid}/${encodeURIComponent(res.file)}?t=${Date.now()}`;
         const videoEl = $("#editorVideo");
@@ -1817,9 +2698,11 @@ document.addEventListener("click", async e => {
       }
       tick();
     } catch (err) {
-      toast(err.message, "bad");
+      toast("Render failed: " + (err.message || err), "bad", "Render Error");
     } finally {
       b.disabled = false;
+      b.classList.remove("loading");
+      setStageLoading(false);
     }
     return;
   }
@@ -1944,6 +2827,88 @@ document.addEventListener("submit", async e => {
   }
 });
 
+// Handle source tabs (YouTube vs Upload)
+document.addEventListener("click", e => {
+  const tabBtn = e.target.closest(".source-tab");
+  if (tabBtn) {
+    const targetTab = tabBtn.dataset.tab;
+    DRAFT.activeTab = targetTab;
+    document.querySelectorAll(".source-tab").forEach(b => {
+      const active = b.dataset.tab === targetTab;
+      b.classList.toggle("active", active);
+      b.setAttribute("aria-selected", active);
+    });
+    const paneYt = $("#pane_youtube");
+    const paneUp = $("#pane_upload");
+    if (paneYt) paneYt.style.display = targetTab === "youtube" ? "block" : "none";
+    if (paneUp) paneUp.style.display = targetTab === "upload" ? "block" : "none";
+    if (targetTab === "youtube") {
+      setTimeout(() => $("#url")?.focus(), 50);
+    }
+  }
+
+  // Handle clip editor modal subnav tabs (Video & Framing, Captions & Words, Cover Studio, Social Copy)
+  const modalTabBtn = e.target.closest(".modal-tab-btn");
+  if (modalTabBtn) {
+    const target = modalTabBtn.dataset.modaltab;
+    document.querySelectorAll(".modal-tab-btn").forEach(b => {
+      const active = b.dataset.modaltab === target;
+      b.classList.toggle("active", active);
+      b.setAttribute("aria-selected", active);
+    });
+    document.querySelectorAll(".modal-tab-pane").forEach(p => {
+      p.classList.toggle("active", p.id === `pane_modaltab_${target}`);
+    });
+    // Auto switch stage mode based on tab
+    if (target === "cover") {
+      const btnThumb = $("#btn_stage_thumb");
+      if (btnThumb && !btnThumb.classList.contains("active")) {
+        btnThumb.click();
+      }
+    } else if (target === "video" || target === "captions") {
+      const btnVid = $("#btn_stage_video");
+      if (btnVid && !btnVid.classList.contains("active")) {
+        btnVid.click();
+      }
+    }
+  }
+});
+
+// Drag and drop video files directly onto composer or dropzone
+document.addEventListener("dragover", e => {
+  e.preventDefault();
+  const c = $("#addform");
+  if (c && e.dataTransfer?.types?.includes("Files")) {
+    c.classList.add("over");
+  }
+});
+
+document.addEventListener("dragleave", e => {
+  const c = $("#addform");
+  if (c && !c.contains(e.relatedTarget)) {
+    c.classList.remove("over");
+  }
+});
+
+document.addEventListener("drop", e => {
+  const c = $("#addform");
+  if (c) c.classList.remove("over");
+  if (e.dataTransfer?.files?.length) {
+    e.preventDefault();
+    const f = e.dataTransfer.files[0];
+    if (f.type.startsWith("video/") || f.name.match(/\.(mp4|mov|mkv|avi|webm|flv|wmv)$/i)) {
+      DRAFT.file = f;
+      DRAFT.link = null;
+      DRAFT.activeTab = "upload";
+      drawAdd();
+      drawAtt();
+      toast(`Loaded video file: ${f.name} (${(f.size / (1024 * 1024)).toFixed(1)} MB)`, "ok");
+    } else {
+      toast("Please drop a valid video file (MP4, MOV, MKV, etc.)", "bad");
+    }
+  }
+});
+
 // File upload picker
 $("#file")?.addEventListener("change", e => {
   if (e.target.files?.length) {
@@ -2063,8 +3028,8 @@ document.addEventListener("input", e => {
   const tid = e.target.id;
   if (tid === "o_hook") {
     const bannerEl = $("#composerPreviewBanner");
-    const text = e.target.value.trim() ? e.target.value.trim().toUpperCase() : "THE 1 SECRET TO HIGH RETENTION";
-    if (bannerEl) bannerEl.innerHTML = `<span class="preview-banner-pill">[ ${esc(text)} ]</span>`;
+    const text = e.target.value.trim() ? e.target.value.trim().toUpperCase() : "THE REAL REASON 99% OF PEOPLE FAIL AT THIS HABIT";
+    if (bannerEl) bannerEl.innerHTML = `<span class="preview-banner-viral-pill">${esc(text)}</span>`;
     return;
   }
   if (tid === "ed_pad_top") {
@@ -2151,9 +3116,29 @@ document.addEventListener("change", e => {
   }
 });
 
+// Google Drive OAuth Popup Listener
+window.addEventListener("message", e => {
+  if (e.data === "gdrive_connected") {
+    api("/api/gdrive/status").then(st => {
+      if (st) {
+        S.gdrive = st;
+        toast("⚡ Google Drive connected successfully!", "ok");
+        drawSettings();
+        rTopBar();
+      }
+    });
+  }
+});
+
 // Initial boot
 document.addEventListener("DOMContentLoaded", () => {
   go("library");
   tick();
   loop();
+  api("/api/gdrive/status").then(st => {
+    if (st) {
+      S.gdrive = st;
+      rTopBar();
+    }
+  }).catch(() => {});
 });
