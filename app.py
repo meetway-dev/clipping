@@ -22,7 +22,6 @@ import zipfile
 import json
 import time
 import math
-import urllib.request
 import subprocess
 import cv2
 from pathlib import Path
@@ -33,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from core.config import BASE_DIR, UPLOADS_DIR, OUTPUTS_DIR, TEMP_DIR, FFMPEG_PATH, DEFAULT_CONFIG
 from core.pipeline import ClipForgePipeline, sanitize_topic_filename
@@ -56,20 +56,21 @@ from core.docs_generator import (
     create_clip_docs_files
 )
 from core.thumbnail_designer import TikTokThumbnailDesigner
+from core.ai_engine import AIEngineError, MultiModelAIEngine, PROCESSING_MODES
 
 # Initialize FastAPI Application
 app = FastAPI(title="ClipForge AI Studio", version="1.1.0")
 
 @app.on_event("startup")
 async def startup_event():
-    """Auto-connects to or starts local Ollama daemon in background."""
+    """Check local AI availability without starting hidden Ollama processes."""
     def _bg_check():
         try:
-            ollama = OllamaManager.get_instance()
-            status = ollama.check_connection()
-            if not status.get("connected"):
-                status = ollama.ensure_running()
-            print(f"[Ollama] Startup check: {status.get('active_model', 'heuristic')} (connected: {status.get('connected')})")
+            status = MultiModelAIEngine.get_instance().get_status()
+            print(
+                f"[Ollama] Startup check: {status.get('active_model') or 'no assigned model available'} "
+                f"(connected: {status.get('connected')})"
+            )
         except Exception as e:
             print(f"[Ollama] Startup check notice: {e}")
     threading.Thread(target=_bg_check, daemon=True).start()
@@ -239,10 +240,17 @@ async def get_peakcut_status():
     return {
         "user": {"name": "Studio Director", "role": "admin", "is_admin": True},
         "ai": {
-            "ready": st.get("connected", False),
+            "ready": st.get("connected", False) and st.get("configured_primary_available", False),
+            "connected": st.get("connected", False),
             "provider": "Ollama (on this machine)",
-            "model": st.get("active_model", "llama3.2"),
-            "today_calls": 18
+            "model": st.get("configured_primary"),
+            "models": st.get("available_models", []),
+            "model_assignments": st.get("model_assignments", {}),
+            "processing_mode": st.get("processing_mode", "balanced"),
+            "base_url": st.get("url"),
+            "error": st.get("error"),
+            "hardware": st.get("hardware", {}),
+            "missing_assignments": st.get("missing_assignments", {}),
         },
         "styles": {
             "bounce": "Hormozi (Bounce)",
@@ -329,6 +337,7 @@ async def sync_peakcut_data():
                 "top_padding": float(c.get("top_padding") or 0.0),
                 "bottom_padding": float(c.get("bottom_padding") or 0.0),
                 "words": c.get("words", []),
+                "model_provenance": c.get("model_provenance"),
                 "social_kit": c.get("social_kit", {}),
                 "output_file": str(OUTPUTS_DIR / fn) if fn else ""
             })
@@ -352,10 +361,17 @@ async def sync_peakcut_data():
         "creators": [{"id": "all", "name": "Main Studio", "channel": ""}],
         "accounts": [],
         "ai": {
-            "ready": st.get("connected", False),
+            "ready": st.get("connected", False) and st.get("configured_primary_available", False),
+            "connected": st.get("connected", False),
             "provider": "Ollama (on this machine)",
-            "model": st.get("active_model", "llama3.2"),
-            "today_calls": 18
+            "model": st.get("configured_primary"),
+            "models": st.get("available_models", []),
+            "model_assignments": st.get("model_assignments", {}),
+            "processing_mode": st.get("processing_mode", "balanced"),
+            "base_url": st.get("url"),
+            "error": st.get("error"),
+            "hardware": st.get("hardware", {}),
+            "missing_assignments": st.get("missing_assignments", {}),
         }
     }
 
@@ -1082,64 +1098,69 @@ async def get_overview():
 
 @app.get("/api/ai")
 async def get_ai_config():
-    ollama = OllamaManager.get_instance()
-    st = ollama.get_status()
+    st = MultiModelAIEngine.get_instance().get_status()
     return {
-        "ready": st.get("connected", False),
+        "ready": st.get("connected", False) and st.get("configured_primary_available", False),
         "provider": "ollama",
-        "providers": [
-            {"id": "ollama", "label": "Ollama (Local on this machine) — 100% Free", "needs_key": False, "address": "http://127.0.0.1:11434"},
-            {"id": "gemini", "label": "Google Gemini API", "needs_key": True},
-            {"id": "openai", "label": "OpenAI (GPT-4o)", "needs_key": True}
-        ],
-        "models": [st.get("active_model", "qwen2.5:7b")],
-        "model": st.get("active_model", "qwen2.5:7b"),
-        "base_url": "http://127.0.0.1:11434"
+        "models": st.get("available_models", []),
+        "model_details": st.get("models", []),
+        "model": st.get("configured_primary"),
+        "model_assignments": st.get("model_assignments", {}),
+        "processing_mode": st.get("processing_mode", "balanced"),
+        "base_url": st.get("url"),
+        "connected": st.get("connected", False),
+        "error": st.get("error"),
+        "hardware": st.get("hardware", {}),
+        "running_models": st.get("running_models", []),
+        "missing_assignments": st.get("missing_assignments", {}),
     }
 
 @app.post("/api/ai/models")
 async def get_ai_models():
-    ollama = OllamaManager.get_instance()
-    st = ollama.get_status()
-    models = []
     try:
-        import urllib.request
-        with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=2) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            for m in data.get("models", []):
-                name = m.get("name")
-                if name:
-                    models.append(name.split(":")[0] if name.endswith(":latest") else name)
-    except Exception:
-        pass
-    if not models:
-        active = st.get("active_model", "qwen2.5:7b")
-        models = [active, "qwen2.5:7b", "llama3.2:3b", "llama3.2", "mistral", "phi3"]
-    seen = set()
-    unique_models = [m for m in models if not (m in seen or seen.add(m))]
-    return {"models": unique_models}
+        models = MultiModelAIEngine.get_instance().discover_models(force=True)
+    except AIEngineError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {"models": models, "names": [model["name"] for model in models]}
 
 @app.post("/api/ai/save")
 async def save_ai_config(payload: Dict[str, Any] = Body(...)):
-    model = payload.get("model", "qwen2.5:7b")
-    host = payload.get("host", "http://127.0.0.1:11434")
-    ollama = OllamaManager.get_instance()
-    ollama.base_url = host
-    ollama._active_model = model
-    st = ollama.check_connection()
-    return {"status": "ok", "connected": st.get("connected", False), "model": model, "host": host}
+    engine = MultiModelAIEngine.get_instance()
+    try:
+        settings = engine.update_settings(payload)
+    except AIEngineError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    status = engine.get_status(refresh=True)
+    return {
+        "status": "ok",
+        "connected": status.get("connected", False),
+        "settings": settings,
+        "status_detail": status,
+    }
 
 @app.post("/api/ai/test")
-async def test_ai():
-    ollama = OllamaManager.get_instance()
-    st = ollama.ensure_running()
-    if st.get("connected"):
-        return {"status": "ok", "model": st.get("active_model", "llama3.2")}
-    raise HTTPException(status_code=500, detail="Could not connect to local Ollama on 127.0.0.1:11434")
+async def test_ai(payload: Dict[str, Any] = Body(default={})):
+    engine = MultiModelAIEngine.get_instance()
+    try:
+        result = engine.generate_text(
+            "Reply with exactly: ClipForge AI connection verified.",
+            role=payload.get("role", "primary"),
+            model=payload.get("model"),
+            timeout=90.0,
+        )
+    except AIEngineError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {
+        "status": "ok",
+        "model": result["model"],
+        "role": result["role"],
+        "elapsed_seconds": result["elapsed_seconds"],
+        "warning": result.get("warning"),
+    }
 
 @app.post("/api/ai/generate-hooks")
 async def generate_viral_hooks_endpoint(payload: Dict[str, Any] = Body(...)):
-    """Generates 5 viral vertical hook headlines using local Ollama (LLaMA 3.2)."""
+    """Generates five hook headlines using the assigned local AI model."""
     transcript = payload.get("transcript", "")
     topic = payload.get("topic", "")
     clip_id = payload.get("clip_id")
@@ -1153,7 +1174,14 @@ async def generate_viral_hooks_endpoint(payload: Dict[str, Any] = Body(...)):
 
     detector = ViralDetector()
     hooks = detector.generate_viral_hooks(transcript, topic)
-    return {"status": "success", "hooks": hooks}
+    generation = OllamaManager.get_instance().last_generation
+    return {
+        "status": "success",
+        "hooks": hooks,
+        "source": generation.get("source", "heuristic"),
+        "model": generation.get("model"),
+        "warning": generation.get("error"),
+    }
 
 @app.post("/api/ai/translate")
 async def translate_transcript_endpoint(payload: Dict[str, Any] = Body(...)):
@@ -1170,7 +1198,14 @@ async def translate_transcript_endpoint(payload: Dict[str, Any] = Body(...)):
 
     detector = ViralDetector()
     res = detector.translate_clip(transcript, target_lang)
-    return {"status": "success", **res}
+    generation = OllamaManager.get_instance().last_generation
+    return {
+        "status": "success",
+        **res,
+        "source": generation.get("source", "heuristic"),
+        "model": generation.get("model"),
+        "warning": generation.get("error"),
+    }
 
 @app.post("/api/ai/b-roll")
 async def suggest_b_roll_endpoint(payload: Dict[str, Any] = Body(...)):
@@ -1178,7 +1213,7 @@ async def suggest_b_roll_endpoint(payload: Dict[str, Any] = Body(...)):
     transcript = payload.get("transcript", "")
     detector = ViralDetector()
     suggestions = detector.suggest_b_roll(transcript)
-    return {"status": "success", "suggestions": suggestions}
+    return {"status": "success", "suggestions": suggestions, "source": "heuristic"}
 
 @app.post("/api/ai/research-clips")
 async def research_viral_clips_endpoint(payload: Dict[str, Any] = Body(...)):
@@ -1239,7 +1274,16 @@ async def research_viral_clips_endpoint(payload: Dict[str, Any] = Body(...)):
         max_seconds=max_dur,
         top_k=top_k
     )
-    return {"status": "success", "query": query, "archetype": archetype, "clips": results}
+    return {
+        "status": "success",
+        "query": query,
+        "archetype": archetype,
+        "clips": results,
+        "sources": sorted({
+            (clip.get("model_provenance") or {}).get("source", "heuristic")
+            for clip in results
+        }),
+    }
 
 @app.post("/api/ai/edit-copilot")
 async def ai_edit_copilot_endpoint(payload: Dict[str, Any] = Body(...)):
@@ -1260,7 +1304,13 @@ async def ai_edit_copilot_endpoint(payload: Dict[str, Any] = Body(...)):
     from core.ollama_manager import OllamaManager
     ollama = OllamaManager.get_instance()
     edits = ollama.ai_edit_copilot(clip_data, instruction)
-    return {"status": "success", "edits": edits}
+    return {
+        "status": "success",
+        "edits": edits,
+        "source": ollama.last_generation.get("source", "heuristic"),
+        "model": ollama.last_generation.get("model"),
+        "warning": ollama.last_generation.get("error"),
+    }
 
 @app.post("/api/ai/social-kit")
 async def generate_social_kit_endpoint(payload: Dict[str, Any] = Body(...)):
@@ -1283,7 +1333,13 @@ async def generate_social_kit_endpoint(payload: Dict[str, Any] = Body(...)):
     from core.ollama_manager import OllamaManager
     ollama = OllamaManager.get_instance()
     kit = ollama.generate_social_distribution_kit(transcript=transcript, title=title, hook=hook)
-    return {"status": "success", "social_kit": kit}
+    return {
+        "status": "success",
+        "social_kit": kit,
+        "source": ollama.last_generation.get("source", "heuristic"),
+        "model": ollama.last_generation.get("model"),
+        "warning": ollama.last_generation.get("error"),
+    }
 
 @app.get("/api/system/status")
 async def get_system_status():
@@ -1298,8 +1354,8 @@ async def get_system_status():
 
     gpu_name = "NVIDIA RTX 3050 (NVENC Hardware Active)"
 
-    detector = ViralDetector(ollama_url=DEFAULT_CONFIG["ollama_url"])
-    ollama_alive = detector.check_ollama_alive()
+    ai_status = MultiModelAIEngine.get_instance().get_status()
+    ollama_alive = ai_status.get("connected", False)
 
     return {
         "status": "online",
@@ -1307,6 +1363,9 @@ async def get_system_status():
         "cuda_available": has_cuda,
         "gpu_name": gpu_name,
         "ollama_alive": ollama_alive,
+        "ai_processing_mode": ai_status.get("processing_mode"),
+        "ai_model_assignments": ai_status.get("model_assignments", {}),
+        "ai_hardware": ai_status.get("hardware", {}),
         "whisper_model": DEFAULT_CONFIG["whisper_model"]
     }
 
@@ -1547,6 +1606,7 @@ def run_pipeline_task(job_id: str, video_path: Optional[str], youtube_url: Optio
             top_padding=float(options.get("top_padding", options.get("pad_top", 0.0))),
             bottom_padding=float(options.get("bottom_padding", options.get("pad_bottom", 0.0))),
             language=options.get("language", "en"),
+            ai_processing_mode=options.get("ai_processing_mode"),
             progress_cb=on_progress
         )
 
@@ -1627,7 +1687,8 @@ async def create_clips(
     top_padding: float = Form(0.0),
     bottom_padding: float = Form(0.0),
     pad_top: Optional[float] = Form(None),
-    pad_bottom: Optional[float] = Form(None)
+    pad_bottom: Optional[float] = Form(None),
+    ai_processing_mode: Optional[str] = Form(None)
 ):
     """
     Accepts either a local video file OR a direct YouTube video link
@@ -1642,6 +1703,11 @@ async def create_clips(
 
     if not has_file and not has_yt:
         raise HTTPException(status_code=400, detail="Please upload a video file or provide a YouTube link.")
+    if ai_processing_mode and ai_processing_mode not in PROCESSING_MODES:
+        raise HTTPException(
+            status_code=422,
+            detail="AI processing mode must be fast, balanced, or maximum_quality.",
+        )
 
     job_id = str(uuid.uuid4())
     upload_dest = None
@@ -1690,7 +1756,8 @@ async def create_clips(
         "watermark_text": watermark_text,
         "watermark_position": watermark_position,
         "enable_voice_clarifier": enable_voice_clarifier,
-        "enable_hook_zoom": enable_hook_zoom
+        "enable_hook_zoom": enable_hook_zoom,
+        "ai_processing_mode": ai_processing_mode
     }
 
     JOBS[job_id] = {
@@ -2512,50 +2579,28 @@ async def reburn_clip_subtitles(payload: Dict[str, Any] = Body(...)):
 
 @app.post("/api/ai/ollama-generate")
 async def generate_with_ollama(payload: Dict[str, Any] = Body(...)):
-    """
-    Connects to local Ollama (e.g. LLaMA 3.2) if running locally.
-    Falls back gracefully to offline heuristic AI if Ollama is not active.
-    100% free with zero token fees.
-    """
+    """Run a prompt through the centralized, installed-model-aware AI engine."""
     prompt = payload.get("prompt", "")
-    model = payload.get("model", "llama3.2")
-    ollama_url = DEFAULT_CONFIG.get("ollama_url", "http://127.0.0.1:11434")
-
     try:
-        req = urllib.request.Request(f"{ollama_url}/api/generate", method="POST")
-        req.add_header("Content-Type", "application/json")
-        req_data = json.dumps({
-            "model": model,
-            "prompt": prompt,
-            "stream": False
-        }).encode("utf-8")
-
-        with urllib.request.urlopen(req, data=req_data, timeout=1.5) as resp:
-            if resp.status == 200:
-                body = json.loads(resp.read().decode("utf-8"))
-                return {
-                    "source": "ollama",
-                    "model": model,
-                    "response": body.get("response", "").strip()
-                }
-    except Exception:
-        pass
-
+        result = MultiModelAIEngine.get_instance().generate_text(
+            prompt,
+            model=payload.get("model"),
+            system_prompt=str(payload.get("system_prompt", "")),
+        )
+    except AIEngineError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
     return {
-        "source": "heuristic",
-        "message": "Local Ollama server is offline. Used built-in narrative heuristic AI.",
-        "response": f"Key takeaway: {prompt[:120]}...\n\nFocus on the core insight and test multiple hook variants."
+        "source": result["source"],
+        "model": result["model"],
+        "response": result["text"],
+        "warning": result.get("warning"),
     }
 
 
 @app.get("/api/ai/ollama-status")
 async def get_ollama_status():
     """Returns local Ollama status, connectivity, and active model."""
-    ollama = OllamaManager.get_instance()
-    conn = ollama.check_connection()
-    if not conn["connected"]:
-        conn = ollama.ensure_running()
-    return conn
+    return MultiModelAIEngine.get_instance().get_status()
 
 
 @app.post("/api/podcast/summarize")
@@ -2864,7 +2909,7 @@ async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
 
 @app.post("/api/clips/{clip_id}/thumbnail/generate-hooks")
 async def generate_clip_thumbnail_hooks(clip_id: str, payload: Dict[str, Any] = Body(default={})):
-    """Generates viral TikTok thumbnail hook variations across 4 high-converting archetypes."""
+    """Generates four transcript-grounded TikTok thumbnail copy options."""
     clip = HistoryManager.get_clip_by_id(clip_id)
     topic = payload.get("topic") or (clip.get("title") if clip else "") or "PODCAST TOPIC"
     transcript = payload.get("transcript") or (clip.get("full_transcript") if clip else "") or ""
@@ -2877,15 +2922,17 @@ async def generate_clip_thumbnail_hooks(clip_id: str, payload: Dict[str, Any] = 
         ("callout", "🎯 Audience Callout")
     ]
 
+    copies = await run_in_threadpool(
+        TikTokThumbnailDesigner.generate_ai_copy_variations,
+        topic=topic,
+        title=topic,
+        hook=hook,
+        transcript=transcript,
+        archetypes=[key for key, _label in archetypes],
+    )
     results = []
     for arch_key, arch_label in archetypes:
-        copy = TikTokThumbnailDesigner.generate_ai_copy(
-            topic=topic,
-            title=topic,
-            hook=hook,
-            transcript=transcript,
-            archetype=arch_key
-        )
+        copy = copies[arch_key]
         copy["archetype"] = arch_key
         copy["label"] = arch_label
         copy["full_headline"] = f"{copy.get('headline_1', '')} {copy.get('headline_2', '')}".strip()
@@ -2894,7 +2941,10 @@ async def generate_clip_thumbnail_hooks(clip_id: str, payload: Dict[str, Any] = 
     return {
         "status": "success",
         "topic": topic,
-        "hooks": results
+        "hooks": results,
+        "source": results[0].get("generation_source", "heuristic_fallback") if results else "none",
+        "model": results[0].get("model", "") if results else "",
+        "warning": results[0].get("generation_warning") if results else None,
     }
 
 @app.post("/api/clips/{clip_id}/thumbnail/regenerate")
@@ -2922,29 +2972,71 @@ async def regenerate_clip_thumbnail(clip_id: str, payload: Dict[str, Any] = Body
     archetype = payload.get("archetype", "curiosity")
     timestamp_sec = float(payload.get("timestamp_sec", 1.2))
 
-    # Build custom copy_data if provided by user
+    # Preserve the user's edits while filling any unfinished fields from a grounded draft.
+    headline_1 = str(payload.get("headline_1") or "").strip()
+    headline_2 = str(payload.get("headline_2") or "").strip()
     copy_data = None
-    if payload.get("headline_1") or payload.get("headline_2"):
+    if not headline_1 or not headline_2:
+        copy_data = await run_in_threadpool(
+            TikTokThumbnailDesigner.generate_ai_copy,
+            topic=topic,
+            title=clip.get("title") or topic,
+            hook=hook,
+            transcript=transcript,
+            archetype=archetype,
+        )
+    if copy_data is None:
         copy_data = {
-            "category": str(payload.get("category") or topic.upper())[:22],
-            "headline_1": str(payload.get("headline_1", "")).upper()[:20],
-            "headline_2": str(payload.get("headline_2", "")).upper()[:20],
-            "subheadline": str(payload.get("subheadline", ""))[:55],
-            "tag_badge": str(payload.get("tag_badge", "EPISODE CLIP")).upper()[:20]
+            "archetype": archetype,
+            "exact_topic": TikTokThumbnailDesigner.extract_clean_topic(
+                topic=topic, title=clip.get("title") or topic, hook=hook, transcript=transcript
+            ),
+            "category": str(payload.get("category") or "INSIGHT").strip()[:20].upper(),
+            "pill_badge": str(payload.get("category") or "INSIGHT").strip()[:20].upper(),
+            "headline_white": headline_1[:38].upper(),
+            "headline_yellow_1": headline_2[:38].upper(),
+            "headline_yellow_2": str(payload.get("subheadline") or "").strip()[:40].upper(),
+            "headline_1": headline_1[:38].upper(),
+            "headline_2": headline_2[:38].upper(),
+            "subheadline": str(payload.get("subheadline") or "").strip()[:40].upper(),
+            "speaker_name": "PODCAST GUEST",
+            "speaker_tag": "PODCAST CLIP",
+            "generation_source": payload.get("copy_source") or "custom",
+            "model": payload.get("copy_model") or "",
+            "generation_warning": payload.get("copy_warning") or None,
         }
+    else:
+        copy_data.update({
+            "archetype": archetype,
+            "category": str(payload.get("category") or copy_data["category"]).strip()[:20].upper(),
+            "pill_badge": str(payload.get("category") or copy_data["pill_badge"]).strip()[:20].upper(),
+            "headline_white": headline_1[:38].upper() or copy_data["headline_white"],
+            "headline_yellow_1": headline_2[:38].upper() or copy_data["headline_yellow_1"],
+            "headline_yellow_2": str(payload.get("subheadline") or "").strip()[:40].upper(),
+            "headline_1": headline_1[:38].upper() or copy_data["headline_white"],
+            "headline_2": headline_2[:38].upper() or copy_data["headline_yellow_1"],
+            "subheadline": str(payload.get("subheadline") or "").strip()[:40].upper(),
+            "generation_source": (
+                payload.get("copy_source")
+                or ("custom" if headline_1 or headline_2 else copy_data.get("generation_source", "ollama"))
+            ),
+            "model": payload.get("copy_model") or copy_data.get("model", ""),
+            "generation_warning": payload.get("copy_warning") or copy_data.get("generation_warning"),
+        })
 
-    TikTokThumbnailDesigner.create_tiktok_thumbnail(
+    await run_in_threadpool(
+        TikTokThumbnailDesigner.create_tiktok_thumbnail,
         video_path=str(vid_path),
         output_jpg_path=str(thumb_path),
         topic=topic,
-        title=topic,
+        title=clip.get("title") or topic,
         hook=hook,
         transcript=transcript,
         timestamp_sec=timestamp_sec,
         copy_data=copy_data,
         style=style,
         accent_color=accent_color,
-        archetype=archetype
+        archetype=archetype,
     )
 
     return {

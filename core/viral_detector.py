@@ -1,10 +1,8 @@
-import json
 import re
-import urllib.request
-import urllib.error
 from typing import List, Dict, Any, Optional
 import yake
 
+from .ai_engine import AIEngineError, MultiModelAIEngine
 from .sentence_aligner import SemanticSentenceAligner
 
 class ViralDetector:
@@ -38,9 +36,9 @@ class ViralDetector:
         "the first thing", "let's talk about", "my advice to", "look at what"
     ]
 
-    def __init__(self, ollama_url: str = "http://127.0.0.1:11434", model: str = "llama3.2:latest"):
-        self.ollama_url = ollama_url.rstrip("/")
-        self.model = model
+    def __init__(self, ai_engine: Optional[MultiModelAIEngine] = None):
+        self.ai_engine = ai_engine or MultiModelAIEngine.get_instance()
+        self._last_ai_provenance: Dict[str, Any] = {}
         self.kw_extractor = yake.KeywordExtractor(
             lan="en",
             n=3,
@@ -50,13 +48,8 @@ class ViralDetector:
         )
 
     def check_ollama_alive(self) -> bool:
-        """Check if local Ollama server is running and accessible."""
-        try:
-            req = urllib.request.Request(f"{self.ollama_url}/api/tags", method="GET")
-            with urllib.request.urlopen(req, timeout=1.5) as resp:
-                return resp.status == 200
-        except Exception:
-            return False
+        """Check Ollama connectivity through the centralized model registry."""
+        return bool(self.ai_engine.get_status(refresh=True).get("connected"))
 
     def is_anchor_starter(self, sentence: Dict[str, Any]) -> bool:
         """Determines if a sentence is a clean, self-contained conversational anchor starter."""
@@ -94,7 +87,8 @@ class ViralDetector:
         max_seconds: float = 65.0,
         top_k: int = 5,
         clip_mode: str = "highlights",
-        progress_cb: Optional[Any] = None
+        progress_cb: Optional[Any] = None,
+        processing_mode: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Discovers complete narrative viral segments.
@@ -113,25 +107,43 @@ class ViralDetector:
         if not sentences:
             return []
 
-        # If LLM is available and user wants highlights (with tight 7s timeout to prevent freezing)
+        # AI selection is limited to highlights; episodic parting remains deterministic.
         initial_clips = []
-        if clip_mode == "highlights" and self.check_ollama_alive() and sentences[-1]["end"] >= min_seconds:
+        ai_fallback_reason = None
+        if clip_mode == "highlights" and sentences[-1]["end"] >= min_seconds:
             try:
                 if progress_cb:
-                    progress_cb("Consulting AI model for viral story arcs...", 34.0)
-                llm_clips = self._detect_with_llm(sentences, min_seconds, max_seconds, top_k)
+                    progress_cb("Checking assigned Ollama models before AI story analysis...", 32.5)
+                llm_clips = self._detect_with_llm(
+                    sentences,
+                    min_seconds,
+                    max_seconds,
+                    top_k,
+                    processing_mode=processing_mode,
+                    progress_cb=progress_cb,
+                )
                 if llm_clips:
                     if progress_cb:
                         progress_cb("Snapping AI story moments to complete sentence boundaries...", 38.0)
                     llm_clips = self._snap_llm_clips(sentences, llm_clips, min_seconds, max_seconds)
                     if llm_clips:
+                        for clip in llm_clips:
+                            clip["model_provenance"] = dict(self._last_ai_provenance)
                         if len(llm_clips) >= top_k:
                             if progress_cb:
                                 progress_cb(f"Finalized {top_k} complete viral clips from AI story arcs...", 41.0)
                             return llm_clips[:top_k]
                         initial_clips = llm_clips
-            except Exception as e:
-                print(f"[ViralDetector] LLM skipped ({e}), using instant Narrative Arc Engine.")
+                else:
+                    ai_fallback_reason = "The assigned model returned no valid clips."
+            except AIEngineError as exc:
+                ai_fallback_reason = str(exc)
+                if progress_cb:
+                    progress_cb(
+                        f"AI analysis unavailable ({exc}); switching to local transcript heuristics.",
+                        35.0,
+                    )
+                print(f"[ViralDetector] AI selection unavailable; using local transcript heuristics: {exc}")
 
         # Step 2: Route by mode
         if clip_mode == "parting":
@@ -149,6 +161,16 @@ class ViralDetector:
                 progress_cb=progress_cb,
                 initial_clips=initial_clips
             )
+
+        if clip_mode == "highlights":
+            heuristic_provenance = {
+                "source": "heuristic",
+                "processing_mode": processing_mode or self.ai_engine.get_settings()["processing_mode"],
+                "reason": ai_fallback_reason or "No valid AI candidates were available.",
+                "models": [],
+            }
+            for clip in res:
+                clip.setdefault("model_provenance", heuristic_provenance)
 
         if progress_cb:
             progress_cb(f"Finalized {len(res)} complete high-retention viral clips...", 41.0)
@@ -725,95 +747,31 @@ class ViralDetector:
         sentences: List[Dict[str, Any]],
         min_seconds: float,
         max_seconds: float,
-        top_k: int
+        top_k: int,
+        processing_mode: Optional[str] = None,
+        progress_cb: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
-        """Query local Ollama LLM with narrative boundary constraints."""
-        transcript_lines = []
-        for s in sentences:
-            start_m, start_s = divmod(int(s["start"]), 60)
-            end_m, end_s = divmod(int(s["end"]), 60)
-            transcript_lines.append(f"[{start_m:02d}:{start_s:02d} - {end_m:02d}:{end_s:02d}] {s['text']}")
-
-        # Feed enough context for topic arcs while keeping local inference bounded.
-        full_text = "\n".join(transcript_lines[:400])
-
-        prompt = f"""You are a master short-form editor for TikTok and YouTube Shorts.
-Analyze this transcript and find the {top_k} most engaging, self-contained viral stories.
-
-CRITICAL RULES:
-1. Complete Narrative Arc: The clip MUST start with a clear topic/hook and END with a natural, complete conclusion.
-2. NEVER cut off mid-thought, mid-sentence, or leave the viewer hanging without context.
-3. Duration Rules:
-   - PRIMARY FOCUS: Focus primarily on self-contained viral stories that conclude naturally within 60 to 90 seconds (ideal for TikTok Creator Rewards and peak viewer retention).
-   - EXTENDED STORIES: If an in-depth story, debate, or interview explanation naturally takes longer to reach its conclusion, allow it to run longer (up to {int(max_seconds)}s) so that the thought is complete and no sentence is cut off mid-thought.
-   - Every clip duration must be between {int(min_seconds)}s and {int(max_seconds)}s.
-4. If the moment starts with a question, include the full spoken answer and the payoff.
-5. Prefer one clearly identifiable podcast topic over switching between unrelated topics.
-6. Output an engaging, high-CTR TOPIC HEADLINE (6 to 12 words in ALL CAPS) that takes full advantage of the top screen safe-area space, hooks viewers instantly, and reveals the core insight (e.g. "THE REAL REASON 99% OF PEOPLE FAIL AT THIS", "WHAT HAPPENS TO YOUR BODY WHEN YOU QUIT SUGAR", "THE 3 DAILY HABITS THAT WILL CHANGE YOUR LIFE").
-
-Transcript:
-{full_text}
-
-Respond ONLY with a JSON array:
-[
-  {{
-    "start": 12.0,
-    "end": 48.5,
-    "title": "THE REAL REASON 99% OF PEOPLE FAIL AT THIS",
-    "hook": "Opening hook sentence...",
-    "virality_score": 96,
-    "reason": "Complete story with powerful conclusion."
-  }}
-]
-"""
-        req_data = json.dumps({
-            "model": self.model,
-            "prompt": prompt,
-            "stream": False,
-            "format": "json"
-        }).encode("utf-8")
-
-        req = urllib.request.Request(
-            f"{self.ollama_url}/api/generate",
-            data=req_data,
-            headers={"Content-Type": "application/json"},
-            method="POST"
+        """Generate candidates through the centralized, mode-aware AI service."""
+        result = self.ai_engine.select_clip_candidates(
+            sentences,
+            min_seconds=min_seconds,
+            max_seconds=max_seconds,
+            top_k=top_k,
+            processing_mode=processing_mode,
+            progress_cb=progress_cb,
         )
-
-        # Set a nimble 7s timeout for LLM so it never freezes the pipeline if model is slow/warming up
-        with urllib.request.urlopen(req, timeout=7.0) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            content = data.get("response", "").strip()
-            match = re.search(r"\[.*\]", content, re.DOTALL)
-            if match:
-                raw_clips = json.loads(match.group(0))
-                valid = []
-                for c in raw_clips:
-                    start = float(c.get("start", 0))
-                    end = float(c.get("end", 0))
-                    dur = end - start
-                    if dur >= min_seconds * 0.8:
-                        valid.append({
-                            "start": round(start, 2),
-                            "end": round(end, 2),
-                            "duration": round(dur, 2),
-                            "title": c.get("title", "VIRAL MOMENT").upper(),
-                            "hook": c.get("hook", ""),
-                            "virality_score": int(c.get("virality_score", 90)),
-                            "narrative_breakdown": {
-                                "hook_score": 95,
-                                "story_score": 92,
-                                "conclusion_score": 94
-                            },
-                            "part_info": "",
-                            "series_id": "",
-                            "reason": c.get("reason", "Complete story arc selected by AI.")
-                        })
-                if valid:
-                    valid.sort(key=lambda x: x["virality_score"], reverse=True)
-                    return valid[:top_k]
-
-        return []
+        self._last_ai_provenance = result["provenance"]
+        clips = result["candidates"]
+        for clip in clips:
+            score = clip["virality_score"]
+            clip.setdefault("narrative_breakdown", {
+                "hook_score": score,
+                "story_score": score,
+                "conclusion_score": score,
+            })
+            clip.setdefault("part_info", "")
+            clip.setdefault("series_id", "")
+        return clips
 
     def generate_social_kit(
         self,
@@ -957,7 +915,7 @@ Respond ONLY with a JSON array:
     ) -> Dict[str, Any]:
         """
         Generates an executive podcast summary, key takeaways, and topic map.
-        Uses OllamaManager (LLaMA 3.2 / Qwen 2.5 Coder) if running, else built-in NLP.
+        Uses the centralized Ollama service when available, else built-in NLP.
         """
         full_transcript = " ".join(s.get("text", "") for s in segments)
         from core.ollama_manager import OllamaManager
@@ -1003,8 +961,10 @@ Respond ONLY with a JSON array:
         if not sentences:
             return []
 
-        # 1. If Ollama is active, query LLM for semantic narrative retrieval
-        if self.check_ollama_alive() and (query or archetype != "all"):
+        # 1. If Ollama is active, query the assigned model for semantic narrative retrieval.
+        ai_status = self.ai_engine.get_status(refresh=True)
+        fallback_reason = ai_status.get("error") or "No model-backed research result was available."
+        if ai_status.get("connected") and (query or archetype != "all"):
             try:
                 llm_matches = self._query_ollama_research_clips(
                     sentences=sentences,
@@ -1018,11 +978,12 @@ Respond ONLY with a JSON array:
                     snapped = self._snap_llm_clips(sentences, llm_matches, min_seconds, max_seconds)
                     if snapped:
                         return snapped[:top_k]
-            except Exception as e:
-                print(f"[Viral Research Warning] Ollama research fallback: {e}")
+            except AIEngineError as exc:
+                fallback_reason = str(exc)
+                print(f"[Viral Research Warning] Using transcript heuristics after AI failure: {exc}")
 
         # 2. High-Precision Semantic & NLP Viral Angle Research Engine
-        return self._heuristic_research_clips(
+        heuristic_clips = self._heuristic_research_clips(
             sentences=sentences,
             query=query,
             archetype=archetype,
@@ -1030,6 +991,14 @@ Respond ONLY with a JSON array:
             max_seconds=max_seconds,
             top_k=top_k
         )
+        for clip in heuristic_clips:
+            clip["model_provenance"] = {
+                "source": "heuristic",
+                "processing_mode": self.ai_engine.get_settings()["processing_mode"],
+                "reason": fallback_reason,
+                "models": [],
+            }
+        return heuristic_clips
 
     def _query_ollama_research_clips(
         self,
@@ -1040,74 +1009,61 @@ Respond ONLY with a JSON array:
         max_seconds: float,
         top_k: int
     ) -> List[Dict[str, Any]]:
-        """Queries local Ollama to find clips matching a creator's research intent."""
-        transcript_lines = []
-        for s in sentences:
-            start_m, start_s = divmod(int(s["start"]), 60)
-            end_m, end_s = divmod(int(s["end"]), 60)
-            transcript_lines.append(f"[{start_m:02d}:{start_s:02d} - {end_m:02d}:{end_s:02d}] {s['text']}")
-
-        full_text = "\n".join(transcript_lines[:450])
+        """Queries assigned Ollama models chunk-by-chunk for creator research intent."""
         archetype_desc = {
-            "controversial": "Controversial / Polarizing debate, disagreement, or counter-intuitive claim.",
-            "mindset": "Mindset Shift / Lightbulb realization, deep psychology, or paradigm change.",
-            "story": "Personal Story / Emotional vulnerability, struggle, or breakthrough.",
-            "blueprint": "Actionable Blueprint / Step-by-step tactics, rules, or practical advice.",
-            "reveal": "Shocking Reveal / Hidden secret, myth debunked, or eye-opening question."
+            "controversial": "Polarizing debate, disagreement, or counter-intuitive claim.",
+            "mindset": "Mindset shift, realization, deep psychology, or paradigm change.",
+            "story": "Personal story, emotional vulnerability, struggle, or breakthrough.",
+            "blueprint": "Actionable blueprint, steps, rules, or practical advice.",
+            "reveal": "Shocking reveal, hidden secret, myth debunked, or eye-opening question.",
         }.get(archetype, "High-retention viral storytelling moment.")
-
-        prompt = f"""You are an elite podcast researcher and viral short-form director for TikTok, YouTube Shorts, and Reels.
-Your objective: Research this podcast transcript and extract the {top_k} moments matching the creator's search request.
-
-CREATOR RESEARCH REQUEST:
-- Search Query: "{query or 'Most engaging viral insight'}"
-- Viral Angle Focus: "{archetype_desc}"
-
-CRITICAL RULES:
-1. Complete Narrative Arc: Every clip MUST begin with a captivating hook sentence and conclude naturally with full context.
-2. Duration: Each clip duration must be between {int(min_seconds)}s and {int(max_seconds)}s (sweet spot 60-90s).
-3. Output an engaging 6 to 12 word TOPIC HEADLINE in ALL CAPS.
-4. Categorize the clip into an Archetype ('Controversial Take', 'Mindset Shift', 'Personal Story', 'Actionable Blueprint', 'Shocking Reveal').
-
-Transcript:
-{full_text}
-
-Respond ONLY with a JSON array:
-[
-  {{
-    "start": 14.5,
-    "end": 78.0,
-    "title": "THE REAL REASON 99% OF PEOPLE FAIL AT THIS",
-    "hook": "Opening hook statement...",
-    "archetype": "Controversial Take",
-    "virality_score": 96,
-    "reason": "Directly answers the research query with an emotionally charged contrarian insight."
-  }}
-]
-"""
-        req_data = json.dumps({
-            "model": self.model,
-            "prompt": prompt,
-            "stream": False,
-            "format": "json"
-        }).encode("utf-8")
-
-        req = urllib.request.Request(
-            f"{self.ollama_url}/api/generate",
-            data=req_data,
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-
-        with urllib.request.urlopen(req, timeout=8.0) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            content = data.get("response", "").strip()
-            match = re.search(r"\[.*\]", content, re.DOTALL)
-            if match:
-                parsed = json.loads(match.group(0))
-                if isinstance(parsed, list):
-                    return parsed
-        return []
+        clips = []
+        models_used = []
+        for chunk in self.ai_engine._chunk_sentences(sentences):
+            transcript = "\n".join(
+                f"[{float(item.get('start', 0)):.2f}-{float(item.get('end', 0)):.2f}] {item.get('text', '').strip()}"
+                for item in chunk
+            )
+            prompt = (
+                f"Find up to {top_k} self-contained podcast clips matching this request: "
+                f"{query or 'Most engaging viral insight'}.\n"
+                f"Angle: {archetype_desc}\n"
+                f"Each clip must last {min_seconds:.1f}-{max_seconds:.1f} seconds, stay within the "
+                "provided transcript boundaries, and end with a complete thought. Use absolute seconds. "
+                "Return JSON only: "
+                '{"clips":[{"start":12.0,"end":48.5,"title":"ALL CAPS TITLE","hook":"Opening sentence",'
+                '"archetype":"Mindset Shift","virality_score":80,"reason":"Why it fits"}]}\n\n'
+                f"Transcript:\n{transcript}"
+            )
+            parsed, result = self.ai_engine.generate_json(
+                prompt,
+                system_prompt="You research podcast transcripts and return only grounded JSON.",
+                role="primary",
+                timeout=150.0,
+            )
+            models_used.append(result["model"])
+            entries = parsed.get("clips", []) if isinstance(parsed, dict) else parsed
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                candidate = self.ai_engine._validate_candidate(
+                    entry,
+                    chunk,
+                    min_seconds,
+                    max_seconds,
+                )
+                if candidate:
+                    candidate["archetype"] = str(entry.get("archetype", archetype)).strip()
+                    candidate["model_provenance"] = {
+                        "source": "ollama",
+                        "models": list(dict.fromkeys(models_used)),
+                    }
+                    clips.append(candidate)
+        clips = self.ai_engine._dedupe_by_overlap(clips)
+        clips.sort(key=lambda item: item["virality_score"], reverse=True)
+        for clip in clips:
+            clip["model_provenance"]["models"] = list(dict.fromkeys(models_used))
+        return clips[:top_k]
 
     def _heuristic_research_clips(
         self,

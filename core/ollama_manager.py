@@ -1,35 +1,20 @@
 import os
-import sys
 import json
-import time
-import shutil
 import logging
-import subprocess
-import urllib.request
-import urllib.error
-from pathlib import Path
+import threading
 from typing import Dict, Any, List, Optional
-from core.config import DEFAULT_CONFIG
+
+from .ai_engine import AIEngineError, MultiModelAIEngine
 
 logger = logging.getLogger("ClipForge.Ollama")
 
 class OllamaManager:
-    """
-    Manages local Ollama lifecycle, automatic background startup,
-    model detection (LLaMA 3.2, Qwen 2.5 Coder, etc.), and inference.
-    100% free, runs entirely offline on local GPU with zero token fees.
-    """
+    """Compatibility facade for older ClipForge features; inference is centralized in MultiModelAIEngine."""
     _instance: Optional["OllamaManager"] = None
-    _active_model: Optional[str] = None
-    _is_running: bool = False
 
     def __init__(self):
-        self.base_url = DEFAULT_CONFIG.get("ollama_url", "http://127.0.0.1:11434")
-        self.preferred_models = [
-            "qwen2.5:7b", "qwen2.5:14b", "qwen2.5:3b", "qwen2.5:1.5b",
-            "llama3.2:3b", "llama3.2:latest", "llama3.2",
-            "qwen2.5-coder:7b", "deepseek-coder:6.7b"
-        ]
+        self.engine = MultiModelAIEngine.get_instance()
+        self._request_state = threading.local()
 
     @classmethod
     def get_instance(cls) -> "OllamaManager":
@@ -37,133 +22,69 @@ class OllamaManager:
             cls._instance = cls()
         return cls._instance
 
+    @property
+    def base_url(self) -> str:
+        return self.engine.get_settings()["base_url"]
+
+    @base_url.setter
+    def base_url(self, value: str) -> None:
+        self.engine.update_settings({"base_url": value})
+
+    @property
+    def _active_model(self) -> str:
+        return self.engine.get_settings()["model_assignments"]["primary"]
+
+    @_active_model.setter
+    def _active_model(self, value: str) -> None:
+        settings = self.engine.get_settings()
+        assignments = settings["model_assignments"]
+        assignments["primary"] = value
+        self.engine.update_settings({"model_assignments": assignments})
+
+    @property
+    def last_generation(self) -> Dict[str, Any]:
+        return getattr(self._request_state, "last_generation", {})
+
     def get_status(self) -> Dict[str, Any]:
-        """Returns connection and model status for Ollama."""
-        return self.check_connection()
+        """Returns live installed/running model and hardware status."""
+        return self.engine.get_status()
 
     def check_connection(self) -> Dict[str, Any]:
-        """Checks if Ollama is running and queries available models."""
-        try:
-            req = urllib.request.Request(f"{self.base_url}/api/tags")
-            with urllib.request.urlopen(req, timeout=1.5) as resp:
-                if resp.status == 200:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    raw_models = data.get("models", [])
-                    model_names = [m.get("name", "") for m in raw_models]
-
-                    best_model = self._select_best_model(model_names)
-                    self._active_model = best_model
-                    self._is_running = True
-
-                    return {
-                        "connected": True,
-                        "active_model": best_model,
-                        "available_models": model_names,
-                        "url": self.base_url
-                    }
-        except Exception:
-            pass
-
-        self._is_running = False
-        return {
-            "connected": False,
-            "active_model": None,
-            "available_models": [],
-            "url": self.base_url
-        }
+        return self.get_status()
 
     def ensure_running(self) -> Dict[str, Any]:
-        """
-        Ensures Ollama is active. If not running, automatically spawns
-        'ollama serve' in background without interrupting the user.
-        """
-        conn = self.check_connection()
-        if conn["connected"]:
-            return conn
-
-        # Attempt to locate ollama executable
-        ollama_bin = shutil.which("ollama")
-        if not ollama_bin and sys.platform == "win32":
-            win_path = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
-            if win_path.exists():
-                ollama_bin = str(win_path)
-
-        if not ollama_bin:
-            logger.info("Ollama CLI not found on host. App will use built-in heuristic NLP.")
-            return {
-                "connected": False,
-                "active_model": "built-in heuristic",
-                "available_models": [],
-                "message": "Ollama not installed; using built-in NLP."
-            }
-
-        logger.info(f"Auto-launching local Ollama daemon: {ollama_bin} serve...")
-        try:
-            creationflags = 0
-            if sys.platform == "win32":
-                creationflags = subprocess.CREATE_NO_WINDOW | getattr(subprocess, "DETACHED_PROCESS", 0)
-
-            subprocess.Popen(
-                [ollama_bin, "serve"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creationflags
-            )
-
-            # Wait up to 3 seconds for server socket to open
-            for _ in range(6):
-                time.sleep(0.5)
-                conn = self.check_connection()
-                if conn["connected"]:
-                    logger.info(f"Ollama server connected! Active model: {conn['active_model']}")
-                    return conn
-
-        except Exception as e:
-            logger.warning(f"Could not auto-start Ollama server: {e}")
-
-        return {
-            "connected": False,
-            "active_model": "built-in heuristic",
-            "available_models": [],
-            "message": "Ollama starting or offline; using built-in NLP."
-        }
-
-    def _select_best_model(self, available: List[str]) -> str:
-        """Selects the strongest available general-purpose model for topic analysis."""
-        for pref in self.preferred_models:
-            for name in available:
-                if name == pref or name.startswith(pref):
-                    return name
-        for name in available:
-            if "embed" not in name.lower():
-                return name
-        return "llama3.2"
+        """Compatibility method: report service health without spawning a hidden Ollama process."""
+        status = self.get_status()
+        if not status.get("connected"):
+            status["message"] = status.get("error") or "Ollama is offline. Start Ollama and retry."
+        return status
 
     def generate(self, prompt: str, system_prompt: str = "", model: Optional[str] = None, timeout: float = 30.0) -> Optional[str]:
-        """
-        Sends an inference request to Ollama. Returns response text or None if offline.
-        """
-        active = model or self._active_model or "llama3.2"
-        payload = {
-            "model": active,
-            "prompt": prompt,
-            "stream": False
-        }
-        if system_prompt:
-            payload["system"] = system_prompt
-
         try:
-            req = urllib.request.Request(f"{self.base_url}/api/generate", method="POST")
-            req.add_header("Content-Type", "application/json")
-            req_data = json.dumps(payload).encode("utf-8")
-
-            with urllib.request.urlopen(req, data=req_data, timeout=timeout) as resp:
-                if resp.status == 200:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    return data.get("response", "").strip()
-        except Exception as e:
-            logger.debug(f"Ollama generation fallback triggered: {e}")
+            result = self.engine.generate_text(
+                prompt,
+                system_prompt=system_prompt,
+                model=model,
+                timeout=timeout,
+            )
+            self._request_state.last_generation = result
+            return result["text"]
+        except AIEngineError as exc:
+            self._request_state.last_generation = {
+                "source": "heuristic",
+                "model": None,
+                "error": str(exc),
+            }
+            logger.warning("Ollama inference unavailable; caller may use its explicit offline fallback: %s", exc)
             return None
+
+    def _mark_heuristic_fallback(self, reason: str) -> None:
+        self._request_state.last_generation = {
+            **self.last_generation,
+            "source": "heuristic",
+            "model": None,
+            "error": reason,
+        }
 
     def summarize_podcast(self, full_transcript: str, duration: float) -> Dict[str, Any]:
         """
@@ -226,18 +147,19 @@ class OllamaManager:
                         ch["end"] = round(min(duration, (pct + 0.25) * duration), 1)
                         ch["duration"] = round(ch["end"] - ch["start"], 1)
                     parsed["source"] = "ollama"
-                    parsed["model"] = self._active_model
+                    parsed["model"] = self.last_generation.get("model")
                     return parsed
             except Exception:
                 pass
 
+        self._mark_heuristic_fallback("Model response did not contain a valid podcast summary.")
         # Built-in Heuristic Fallback
         return self._heuristic_podcast_summary(full_transcript, duration)
 
     def generate_viral_hooks(self, transcript: str, topic_title: str = "") -> List[Dict[str, str]]:
         """
         Generates 5 distinct high-retention vertical video hooks for TikTok, Shorts, and Reels.
-        Uses local Ollama LLaMA 3.2 if available, with instantaneous heuristic fallback.
+        Uses the assigned local Ollama model, with an explicit built-in heuristic fallback.
         """
         prompt = (
             f"You are a viral social media director specializing in TikTok, YouTube Shorts, and Instagram Reels.\n"
@@ -279,6 +201,7 @@ class OllamaManager:
             except Exception:
                 pass
 
+        self._mark_heuristic_fallback("Model response did not contain valid hook JSON.")
         # Heuristic fallback based on keywords and topic (6 to 12 words)
         clean_title = (topic_title or "THIS MOMENT").strip().title()
         return [
@@ -327,6 +250,7 @@ class OllamaManager:
             except Exception:
                 pass
 
+        self._mark_heuristic_fallback("Model response did not contain a valid translation object.")
         return {
             "translated_text": transcript,
             "language": target_name,
@@ -417,6 +341,7 @@ Respond with ONLY a raw JSON object matching this schema:
             except Exception:
                 pass
 
+        self._mark_heuristic_fallback("Model response did not contain valid edit suggestions.")
         # 2. Robust NLP Heuristic Fallback
         ins_lower = instruction.lower()
         new_title = curr_title
@@ -503,6 +428,7 @@ Respond ONLY with a JSON object matching this schema:
             except Exception:
                 pass
 
+        self._mark_heuristic_fallback("Model response did not contain a valid social-kit object.")
         # 2. Heuristic fallback
         return {
             "tiktok": {

@@ -69,7 +69,7 @@ const S = {
   accounts: [],
   status: {
     user: { name: "Studio Director", role: "admin" },
-    ai: { ready: true, provider: "Ollama (on this machine)", model: "llama3.2", today_calls: 18 },
+    ai: { ready: false, provider: "Ollama (on this machine)", model: "qwen3.5:4b", processing_mode: "balanced" },
     styles: { bounce: "Hormozi (Bounce)", hype: "MrBeast (Hype)", clean: "Modern Clean", cyber: "Cyber Neon" },
     layouts: { fit_canvas: "Fit Full Video (Hook + Captions)", face_center: "Smart Face Center", gameplay: "Active speaker tracking", split: "Split screen (Host/Guest)", blur: "Blurred fill", crop: "Fill screen" }
   },
@@ -249,9 +249,9 @@ function drawShell() {
       <span class="ai-ic">${ic("bolt")}</span>
       <span class="ai-tx">
         <small><span class="led ${k.ready ? "" : "no"}"></span> Local Ollama</small>
-        <b>${k.ready ? esc(k.model || "llama3.2") : "Connecting..."}</b>
+        <b>${k.ready ? esc(k.model || "No model loaded") : (k.connected ? "Primary model missing" : "Ollama offline")}</b>
       </span>
-      <span class="ai-n" style="font-size:11px;color:var(--frame-dim)">Offline GPU</span>
+      <span class="ai-n" style="font-size:11px;color:var(--frame-dim)">${k.hardware?.gpu_name ? "GPU telemetry" : "CPU telemetry"}</span>
     </button>` : "") +
     `<div class="me">
       <button class="me-btn" data-act="go" data-v="settings">
@@ -332,6 +332,7 @@ function drawAdd(variant) {
   const box = $("#add");
   if (!box) return;
   const isYt = DRAFT.activeTab === "youtube";
+  const aiMode = (S.status && S.status.ai && S.status.ai.processing_mode) || "balanced";
 
   box.innerHTML = `
     <form class="composer ${variant === "hero" ? "big" : "compact"}" id="addform">
@@ -449,6 +450,17 @@ function drawAdd(variant) {
                 <button type="button" class="btn sm dur-preset-btn" data-act="setdurpreset" data-min="70" data-max="300" style="font-size:11px;padding:3px 8px">🎬 70–300s (Extended Story)</button>
               </div>
             </div>
+          </div>
+
+          <div class="ob wide">
+            <label class="f">AI processing mode
+              <select id="o_ai_mode">
+                <option value="fast" ${aiMode === "fast" ? "selected" : ""}>Fast — primary model only</option>
+                <option value="balanced" ${aiMode === "balanced" ? "selected" : ""}>Balanced — review top candidates</option>
+                <option value="maximum_quality" ${aiMode === "maximum_quality" ? "selected" : ""}>Maximum Quality — review and semantic deduplication</option>
+              </select>
+              <span class="hint">AI analysis uses assigned installed models in sequence; rendering and Faster-Whisper are unchanged.</span>
+            </label>
           </div>
 
           <div class="ob wide">
@@ -1069,7 +1081,7 @@ function briefHtml(j) {
   return `
     <div class="podcast-brief-card">
       <div class="brief-header">
-        <span class="brief-badge">🧠 Executive Podcast Brief & Discussion Chapters (Ollama LLaMA 3.2)</span>
+        <span class="brief-badge">🧠 Executive Podcast Brief & Discussion Chapters (Local Ollama)</span>
       </div>
       <div class="brief-section">
         <div class="brief-section-title">Executive Overview</div>
@@ -1303,12 +1315,13 @@ function openClip(jid, cid) {
   D.thumbStyle = "hormozi";
   D.thumbColor = "#FFE600";
   D.thumbArch = "curiosity";
+  D.thumbCopySource = "";
+  D.thumbCopyModel = "";
   D.thumbSec = Math.min((c.end || 30), (c.start || 0) + 1.2);
 
-  const initTopicWords = (c.title || "SUCCESS").trim().toUpperCase().split(/\s+/);
-  const defaultHl1 = "THE UNTOLD TRUTH";
-  const defaultHl2 = ("ABOUT " + (initTopicWords[0] || "THIS")).slice(0, 20);
-  const defaultCat = (initTopicWords[0] ? initTopicWords[0] + " PROTOCOL" : "PODCAST EXCLUSIVE").slice(0, 22);
+  const defaultHl1 = "";
+  const defaultHl2 = "";
+  const defaultCat = "";
 
   dlg.innerHTML = `
     <div class="editor">
@@ -1621,7 +1634,7 @@ function openClip(jid, cid) {
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
             <div>
               <h4 style="margin:0;font-size:13px;font-weight:700;color:#F8F3EF">Universal Editorial Cover Studio</h4>
-              <p class="sub" style="font-size:11.5px;color:#C8BCB4">Real speaker photography + bold left-aligned typography</p>
+              <p class="sub" style="font-size:11.5px;color:#C8BCB4">Short, transcript-aware copy with clear spacing and TikTok-safe placement</p>
             </div>
             <button type="button" class="btn sm" data-act="aithumbhooks" data-c="${c.id}" style="background:linear-gradient(135deg,#FF8B33,#FFB800);color:#1E1612;font-weight:700;font-size:11px">
               ${ic("bolt")}AI Hook Ideas
@@ -1701,12 +1714,12 @@ function openClip(jid, cid) {
 
           <!-- Editable Headline & Text Fields -->
           <div class="two">
-            <label class="f">Line 1 Hook (White)<input id="ed_thumb_hl1" value="${esc(defaultHl1)}" maxlength="22"></label>
-            <label class="f">Line 2 Punch (Accent Ribbon)<input id="ed_thumb_hl2" value="${esc(defaultHl2)}" maxlength="22"></label>
+            <label class="f">Opening phrase (white)<input id="ed_thumb_hl1" value="${esc(defaultHl1)}" maxlength="38" placeholder="Short opening phrase"></label>
+            <label class="f">Main idea (highlight)<input id="ed_thumb_hl2" value="${esc(defaultHl2)}" maxlength="38" placeholder="The clearest point"></label>
           </div>
           <div class="two">
-            <label class="f">Top Category Pill<input id="ed_thumb_cat" value="${esc(defaultCat)}" maxlength="24"></label>
-            <label class="f">Speaker / Authority Name<input id="ed_thumb_sub" value="LONGEVITY PROTOCOL" maxlength="40"></label>
+            <label class="f">Small topic badge<input id="ed_thumb_cat" value="${esc(defaultCat)}" maxlength="20" placeholder="Optional label"></label>
+            <label class="f">Supporting line<input id="ed_thumb_sub" value="" maxlength="40" placeholder="Optional extra context"></label>
           </div>
 
           <div style="margin-top:12px">
@@ -1760,7 +1773,7 @@ function drawSettings() {
   if (!box) return;
   const tab = S.stab || "ai";
   const tabs = [
-    ["ai", "AI", "bolt", "Local Ollama LLaMA 3.2 model & API"],
+    ["ai", "AI", "bolt", "Local Ollama model assignments & processing modes"],
     ["gdrive", "Google Drive", "cloud", "Sync clips to mobile for TikTok"],
     ["apps", "Connected apps", "plug", "Where your clips get posted"],
     ["speech", "Speech models", "chat", "faster-whisper GPU engine"],
@@ -1783,31 +1796,60 @@ function drawSettings() {
 }
 
 function aiSettingsHtml() {
+  const ai = S.status.ai || {};
+  const assignments = ai.model_assignments || {
+    primary: "qwen3.5:4b",
+    reviewer: "qwen2.5:7b",
+    fallback: "llama3.2:latest",
+    embedding: "nomic-embed-text:latest"
+  };
+  const models = Array.isArray(ai.models) ? ai.models : [];
+  const modelSelect = (role, label) => {
+    const assigned = assignments[role] || "";
+    const choices = [...new Set([assigned, ...models].filter(Boolean))];
+    return `<label class="f">${label}
+      <select id="set_ai_${role}">
+        ${choices.map(name => `<option value="${esc(name)}" ${name === assigned ? "selected" : ""}>${esc(name)}${models.includes(name) ? "" : " (not installed)"}</option>`).join("")}
+      </select>
+    </label>`;
+  };
+  const hardware = ai.hardware || {};
+  const gpuText = hardware.gpu_name
+    ? `${hardware.gpu_name} · ${hardware.gpu_vram_free_mb || "?"}/${hardware.gpu_vram_total_mb || "?"} MB VRAM free`
+    : "No NVIDIA GPU telemetry available";
+  const ramText = hardware.ram_total_gb
+    ? `${hardware.ram_available_gb} / ${hardware.ram_total_gb} GB RAM available`
+    : "System memory telemetry unavailable";
+  const statusText = ai.ready
+    ? `Connected to ${ai.base_url || "Ollama"}`
+    : (ai.connected && ai.missing_assignments?.primary
+      ? `Ollama is connected, but primary model ${ai.missing_assignments.primary} is not installed.`
+      : (ai.error || "Ollama is offline. Installed model assignments are retained."));
   return `
     <section class="set-sec">
-      <h2>Local Ollama & AI Providers</h2>
-      <p class="help">ClipForge uses local Ollama LLaMA 3.2 for podcast intelligence briefs, narrative arc scoring, and viral topic extraction on your machine. 100% free and private.</p>
+      <h2>Local Multi-Model AI Engine</h2>
+      <p class="help">ClipForge discovers installed Ollama models and routes work through one local scheduler. Faster-Whisper and FFmpeg rendering remain unchanged.</p>
       <div class="ai-form">
-        <label class="f">AI Provider
-          <select id="set_ai_provider">
-            <option value="ollama" selected>Ollama (Local on this machine) — 100% Free</option>
-            <option value="gemini">Google Gemini API</option>
-            <option value="openai">OpenAI (GPT-4o)</option>
-            <option value="anthropic">Anthropic Claude</option>
-          </select>
-        </label>
-        <label class="f">Active Model
-          <div class="with">
-            <input id="set_ai_model" value="${esc(S.status.ai.model || "llama3.2")}">
-            <button class="btn" type="button" data-act="findmodels">Find models</button>
-          </div>
-          <span class="hint">Recommended: <code>llama3.2</code> or <code>llama3.2:1b</code> for ultra-fast local inference.</span>
-        </label>
+        <div class="hint" role="status">${esc(statusText)}</div>
+        ${modelSelect("primary", "Primary analysis model")}
+        ${modelSelect("reviewer", "Candidate review model")}
+        ${modelSelect("fallback", "Explicit fallback model")}
+        ${modelSelect("embedding", "Semantic deduplication model")}
         <label class="f">Ollama Host Address
-          <input id="set_ai_host" value="http://127.0.0.1:11434">
+          <input id="set_ai_host" value="${esc(ai.base_url || "http://127.0.0.1:11434")}">
         </label>
+        <label class="f">Default processing mode
+          <select id="set_ai_mode">
+            <option value="fast" ${ai.processing_mode === "fast" ? "selected" : ""}>Fast — primary model only</option>
+            <option value="balanced" ${!ai.processing_mode || ai.processing_mode === "balanced" ? "selected" : ""}>Balanced — review candidates</option>
+            <option value="maximum_quality" ${ai.processing_mode === "maximum_quality" ? "selected" : ""}>Maximum Quality — review + semantic deduplication</option>
+          </select>
+          <span class="hint">Inference is serialized and models are unloaded when switching roles to reduce VRAM pressure.</span>
+        </label>
+        <div class="hint">Hardware: ${esc(gpuText)} · ${esc(ramText)}</div>
         <div class="row" style="margin-top:10px">
-          <button class="btn primary" data-act="saveai">Save & Test Connection</button>
+          <button class="btn" type="button" data-act="findmodels">Refresh installed models</button>
+          <button class="btn primary" data-act="saveai">Save Settings & Test Model</button>
         </div>
       </div>
     </section>`;
@@ -1967,13 +2009,19 @@ function drawOverview() {
   const box = $("#ov");
   if (!box) return;
   const clipsTotal = S.jobs.reduce((a, j) => a + (j.clips || []).length, 0);
+  const ai = S.status.ai || {};
+  const hardware = ai.hardware || {};
+  const gpuLabel = hardware.gpu_name || "GPU telemetry unavailable";
+  const aiDescription = ai.ready
+    ? `Connected to ${ai.base_url || "local Ollama"} · ${ai.model || "No model loaded"} · ${ai.processing_mode || "balanced"} mode`
+    : `Ollama offline${ai.error ? ` · ${ai.error}` : " · AI tasks will report when heuristic fallback is used"}`;
 
   box.innerHTML = `
     <div class="tiles">
       <div class="tile"><i>${ic("radio")}</i><b>0</b><span>Live recordings</span></div>
       <div class="tile"><i>${ic("scissors")}</i><b>${clipsTotal}</b><span>Clips generated</span></div>
       <div class="tile"><i>${ic("send")}</i><b>${clipsTotal}</b><span>Ready to publish</span></div>
-      <div class="tile"><i>${ic("bolt")}</i><b>RTX 3050</b><span>NVENC GPU Active</span></div>
+      <div class="tile"><i>${ic("bolt")}</i><b>${esc(gpuLabel)}</b><span>${hardware.gpu_vram_free_mb ?? "?"} MB VRAM free</span></div>
     </div>
     <div class="home-grid">
       <div class="card">
@@ -1981,7 +2029,7 @@ function drawOverview() {
           <div><h2>Activity (Last 14 Days)</h2><p class="sub">Clips created vs exported</p></div>
           <div class="kpis">
             <div class="kpi"><b>${clipsTotal}</b><span>Clips Made</span></div>
-            <div class="kpi"><b>100%</b><span>GPU Acceleration</span></div>
+            <div class="kpi"><b>${hardware.ram_available_gb ?? "?"} GB</b><span>Available RAM</span></div>
           </div>
         </div>
         <div style="height:140px;display:grid;place-items:center;background:var(--muted);border-radius:10px;color:var(--faint)">
@@ -1990,10 +2038,10 @@ function drawOverview() {
       </div>
       <div class="card">
         <div class="card-head">
-          <div><h2>Local AI Intelligence</h2><p class="sub">Ollama LLaMA 3.2</p></div>
+          <div><h2>Local AI Intelligence</h2><p class="sub">Multi-model Ollama engine</p></div>
         </div>
         <p style="font-size:13.5px;color:var(--text);line-height:1.6">
-          Local LLM intelligence active on <code>127.0.0.1:11434</code>. Generating executive podcast summaries, narrative arc ratings, and virality timeline scrubbers completely offline.
+          ${esc(aiDescription)}. Models are discovered from Ollama at runtime; no model is assumed to be installed.
         </p>
       </div>
     </div>`;
@@ -4130,34 +4178,13 @@ document.addEventListener("click", async e => {
   }
   if (a === "setthumbarch") {
     D.thumbArch = d.arch;
+    D.thumbCopySource = "";
+    D.thumbCopyModel = "";
+    D.thumbCopyWarning = "";
     document.querySelectorAll(".hook-arch-pill").forEach(p => {
       p.classList.toggle("on", p.getAttribute("data-arch") === d.arch);
     });
-    const topic = ($("#ed_title")?.value || "SUCCESS").trim().toUpperCase();
-    const words = topic.split(/\s+/);
-    const core = words[0] || "THIS";
-    const hl1Inp = $("#ed_thumb_hl1");
-    const hl2Inp = $("#ed_thumb_hl2");
-    const subInp = $("#ed_thumb_sub");
-
-    if (d.arch === "warning") {
-      if (hl1Inp) hl1Inp.value = "STOP MAKING THIS";
-      if (hl2Inp) hl2Inp.value = `${core} MISTAKE`.slice(0, 20);
-      if (subInp) subInp.value = "Why 99% of people fail at this";
-    } else if (d.arch === "formula") {
-      if (hl1Inp) hl1Inp.value = "THE 3 RULES OF";
-      if (hl2Inp) hl2Inp.value = `${core} MASTERY`.slice(0, 20);
-      if (subInp) subInp.value = "The step-by-step formula";
-    } else if (d.arch === "callout") {
-      if (hl1Inp) hl1Inp.value = "IF YOU WANT";
-      if (hl2Inp) hl2Inp.value = `REAL ${core}`.slice(0, 20);
-      if (subInp) subInp.value = "Watch before this gets deleted";
-    } else {
-      if (hl1Inp) hl1Inp.value = "THE UNTOLD TRUTH";
-      if (hl2Inp) hl2Inp.value = `ABOUT ${core}`.slice(0, 20);
-      if (subInp) subInp.value = "What 99% of people miss";
-    }
-    toast(`Applied ${d.arch.toUpperCase()} hook template!`, "ok");
+    toast(`Selected ${d.arch}. Use AI Hook Ideas for a transcript-grounded suggestion, or write your own.`, "ok");
     return;
   }
   if (a === "aithumbhooks") {
@@ -4167,27 +4194,33 @@ document.addEventListener("click", async e => {
       const cid = d.c || D.cid;
       const res = await send(`/api/clips/${cid}/thumbnail/generate-hooks`, {
         topic: $("#ed_title")?.value || $("#ed_hook")?.value || "",
-        hook: $("#ed_desc")?.value || $("#ed_hook")?.value || ""
+        hook: $("#ed_desc")?.value || $("#ed_hook")?.value || "",
+        transcript: c?.full_transcript || c?.transcript || ""
       });
       const panel = $("#ai_thumb_hooks_panel");
       if (panel && res.hooks && res.hooks.length) {
         panel.style.display = "block";
         panel.innerHTML = `
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-            <span style="font-size:12px;font-weight:700;color:var(--brand)">⚡ AI TikTok Hook Formulas</span>
+            <span style="font-size:12px;font-weight:700;color:var(--brand)">⚡ Transcript-aware cover copy</span>
             <button type="button" class="btn sm ghost" onclick="document.getElementById('ai_thumb_hooks_panel').style.display='none'">✕</button>
           </div>
           <div style="display:flex;flex-direction:column;gap:6px">
             ${res.hooks.map(h => `
               <button type="button" class="btn sm ghost" data-act="applythumbhook"
+                data-arch="${esc(h.archetype || 'curiosity')}"
                 data-cat="${esc(h.category || '')}"
                 data-hl1="${esc(h.headline_1 || '')}"
                 data-hl2="${esc(h.headline_2 || '')}"
                 data-sub="${esc(h.subheadline || '')}"
+                data-color="${esc(h.accent_color || '#FFE600')}"
+                data-source="${esc(h.generation_source || res.source || '')}"
+                data-model="${esc(h.model || res.model || '')}"
+                data-warning="${esc(h.generation_warning || '')}"
                 style="justify-content:flex-start;text-align:left;font-size:11.5px;padding:8px 10px;background:#241A14;border:1px solid rgba(255,255,255,0.12);border-radius:6px;flex-direction:column;align-items:flex-start;gap:2px">
                 <div style="display:flex;justify-content:space-between;width:100%">
                   <span style="font-size:10px;font-weight:800;color:var(--brand)">${esc(h.label || h.archetype)}</span>
-                  <span style="font-size:9.5px;color:var(--frame-dim)">[Click to apply]</span>
+                  <span style="font-size:9.5px;color:var(--frame-dim)">[Click to apply · ${esc(h.generation_source === "ollama" ? (h.model || "local Ollama") : "safe fallback")}]</span>
                 </div>
                 <div style="font-size:12px;font-weight:900;color:#F8F3EF">${esc(h.headline_1)} <span style="color:#FFE600">${esc(h.headline_2)}</span></div>
                 <div style="font-size:10.5px;color:#C8BCB4">${esc(h.subheadline)}</div>
@@ -4195,7 +4228,12 @@ document.addEventListener("click", async e => {
             `).join("")}
           </div>
         `;
-        toast("Loaded 4 viral TikTok thumbnail hooks!", "ok");
+        toast(
+          res.source === "ollama"
+            ? `Copy generated by ${res.model || "local Ollama"}.${res.warning ? ` ${res.warning}` : ""} Review and choose a variation.`
+            : `AI unavailable; showing safe fallback copy. ${res.warning || ""}`,
+          "ok"
+        );
       }
     } catch(err) {
       toast("Error generating thumbnail hooks: " + (err.message || err), "bad");
@@ -4205,10 +4243,25 @@ document.addEventListener("click", async e => {
     return;
   }
   if (a === "applythumbhook") {
+    D.thumbArch = d.arch || D.thumbArch || "curiosity";
+    document.querySelectorAll(".hook-arch-pill").forEach(p => {
+      p.classList.toggle("on", p.getAttribute("data-arch") === D.thumbArch);
+    });
+    if (d.color) {
+      D.thumbColor = d.color;
+      document.querySelectorAll(".color-swatch-btn").forEach(s => {
+        s.classList.toggle("on", s.getAttribute("data-color") === d.color);
+      });
+      const colorLabel = $("#thumb_color_label");
+      if (colorLabel) colorLabel.style.color = d.color;
+    }
     if ($("#ed_thumb_cat")) $("#ed_thumb_cat").value = d.cat || "";
     if ($("#ed_thumb_hl1")) $("#ed_thumb_hl1").value = d.hl1 || "";
     if ($("#ed_thumb_hl2")) $("#ed_thumb_hl2").value = d.hl2 || "";
     if ($("#ed_thumb_sub")) $("#ed_thumb_sub").value = d.sub || "";
+    D.thumbCopySource = d.source || "";
+    D.thumbCopyModel = d.model || "";
+    D.thumbCopyWarning = d.warning || "";
     const p = $("#ai_thumb_hooks_panel");
     if (p) p.style.display = "none";
     toast("Hook loaded! Click 'Render Cover' to apply.", "ok");
@@ -4233,13 +4286,22 @@ document.addEventListener("click", async e => {
         headline_1: $("#ed_thumb_hl1")?.value || "",
         headline_2: $("#ed_thumb_hl2")?.value || "",
         subheadline: $("#ed_thumb_sub")?.value || "",
+        copy_source: D.thumbCopySource || "",
+        copy_model: D.thumbCopyModel || "",
+        copy_warning: D.thumbCopyWarning || "",
         style: D.thumbStyle || "hormozi",
         accent_color: D.thumbColor || "#FFE600",
         archetype: D.thumbArch || "curiosity",
         timestamp_sec: D.thumbSec || Number($("#ed_thumb_sec")?.value || 1.2)
       });
       if (res && res.thumbnail_url) {
-        toast("✨ Professional TikTok cover thumbnail rendered!", "ok", "Cover Ready");
+        const copy = res.copy_data || {};
+        const copyStatus = copy.generation_source === "ollama"
+          ? `Cover ready · copy by ${copy.model || "local Ollama"}${copy.generation_warning ? ` · ${copy.generation_warning}` : ""}`
+          : copy.generation_source === "heuristic_fallback"
+            ? `Cover ready · AI unavailable; used safe fallback copy${copy.generation_warning ? ` (${copy.generation_warning})` : ""}`
+            : "Cover ready · custom text applied";
+        toast(copyStatus, "ok", "Cover Ready");
         const img = $("#editorThumbImg");
         if (img) {
           img.src = res.thumbnail_url;
@@ -4453,10 +4515,18 @@ document.addEventListener("click", async e => {
     try {
       toast("Scanning local Ollama models...", "ok");
       const res = await send("/api/ai/models", {});
-      if (res.models && res.models.length) {
-        const inp = $("#set_ai_model");
-        if (inp) inp.value = res.models[0];
-        toast(`Found ${res.models.length} local models: ${res.models.join(", ")}`, "ok");
+      const names = res.names || (res.models || []).map(model => model.name).filter(Boolean);
+      if (names.length) {
+        ["primary", "reviewer", "fallback", "embedding"].forEach(role => {
+          const select = $(`#set_ai_${role}`);
+          if (!select) return;
+          const current = select.value;
+          select.innerHTML = names.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join("");
+          select.value = names.includes(current) ? current : names[0];
+        });
+        toast(`Found ${names.length} installed models: ${names.join(", ")}`, "ok");
+      } else {
+        toast("Ollama returned no installed models.", "info");
       }
     } catch (err) {
       toast("Could not reach Ollama: " + err.message, "bad");
@@ -4467,19 +4537,34 @@ document.addEventListener("click", async e => {
   }
   if (a === "saveai") {
     b.disabled = true;
+    let settingsSaved = false;
     try {
-      const model = $("#set_ai_model")?.value || "llama3.2";
-      const host = $("#set_ai_host")?.value || "http://127.0.0.1:11434";
-      toast("Testing connection to Ollama...", "ok");
-      const res = await send("/api/ai/save", { model, host });
-      if (res.connected) {
-        toast(`Connected to Ollama (${model})! Status: Healthy`, "ok");
-      } else {
-        toast(`Ollama at ${host} is offline. Start it in terminal: 'ollama serve'`, "bad");
-      }
+      const model_assignments = {
+        primary: $("#set_ai_primary")?.value || "",
+        reviewer: $("#set_ai_reviewer")?.value || "",
+        fallback: $("#set_ai_fallback")?.value || "",
+        embedding: $("#set_ai_embedding")?.value || ""
+      };
+      const base_url = $("#set_ai_host")?.value?.trim() || "http://127.0.0.1:11434";
+      const processing_mode = $("#set_ai_mode")?.value || "balanced";
+      toast("Saving assignments and loading the primary model for a real connection test...", "loading", "Local AI");
+      await send("/api/ai/save", { model_assignments, base_url, processing_mode });
+      settingsSaved = true;
       tick();
+      const tested = await send("/api/ai/test", { role: "primary", model: model_assignments.primary });
+      toast(
+        `Settings saved. ${tested.model} replied in ${tested.elapsed_seconds}s${tested.warning ? ` · ${tested.warning}` : ""}`,
+        "ok",
+        "AI Model Ready"
+      );
     } catch (err) {
-      toast("Connection error: " + err.message, "bad");
+      toast(
+        settingsSaved
+          ? "Settings saved, but the selected model test failed: " + err.message
+          : "Could not save AI settings: " + err.message,
+        "bad",
+        "Local AI"
+      );
     } finally {
       b.disabled = false;
     }
@@ -4524,6 +4609,7 @@ document.addEventListener("submit", async e => {
       fd.append("max_clips", $("#o_max")?.value || "5");
       fd.append("min_clip_seconds", $("#o_min")?.value || "25");
       fd.append("max_clip_seconds", $("#o_maxlen")?.value || "65");
+      fd.append("ai_processing_mode", $("#o_ai_mode")?.value || S.status.ai.processing_mode || "balanced");
       fd.append("face_tracking", layoutMode === "speaker_focus" ? "true" : "false");
       fd.append("show_headline_banner", $("#o_captions")?.checked ? "true" : "false");
       fd.append("custom_headline", $("#o_hook")?.value?.trim() || "");

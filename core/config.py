@@ -48,8 +48,6 @@ DEFAULT_CONFIG = {
     "whisper_model": "base",       # tiny, base, small, medium, large-v3-turbo
     "device": "auto",              # cuda, cpu, auto
     "compute_type": "float16",     # float16 for GPU, int8/float32 for CPU
-    "ollama_url": "http://127.0.0.1:11434",
-    "ollama_model": "qwen2.5:7b",
     "min_clip_seconds": 25,
     "max_clip_seconds": 65,
     "target_width": 1080,

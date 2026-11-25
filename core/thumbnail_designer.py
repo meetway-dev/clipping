@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from .ai_engine import AIEngineError, MultiModelAIEngine
 from .config import FFMPEG_PATH, TEMP_DIR
 
 # High-impact typography paths with fallbacks
@@ -438,7 +439,7 @@ class TikTokThumbnailDesigner:
         transcript: str = ""
     ) -> str:
         """
-        Extracts a clean, punchy 2-5 word exact topic headline from the video segment.
+        Extracts a clean, punchy 2-3 word topic headline from the video segment.
         Strips conversational filler phrases and captures core subject matter (medical, financial, fitness, etc.).
         """
         raw = str(topic or title or hook or "").strip()
@@ -449,6 +450,17 @@ class TikTokThumbnailDesigner:
             raw,
             flags=re.IGNORECASE
         ).strip()
+
+        explicit_words = [
+            word for word in cleaned.split()
+            if word.lower() not in {
+                "a", "an", "the", "in", "on", "at", "to", "for", "of", "with", "by",
+                "about", "why", "how", "what", "when", "do", "does", "did", "is", "are",
+            }
+            and not re.fullmatch(r"\d+", word)
+        ]
+        if len(explicit_words) >= 2:
+            return " ".join(explicit_words[-3:]).upper()
         
         # Look for domain entities and subject matter in combined text
         combined = f"{raw} {hook} {transcript}".lower()
@@ -494,80 +506,332 @@ class TikTokThumbnailDesigner:
         transcript: str = "",
         archetype: str = "curiosity"
     ) -> Dict[str, Any]:
-        """
-        Generates ultra-short, punchy editorial headline elements featuring BOTH:
-        1. The EXACT TOPIC of the video segment.
-        2. The psychological trigger hook (Warning, Curiosity, or Authority).
-        """
-        exact_topic = cls.extract_clean_topic(topic=topic, title=title, hook=hook, transcript=transcript)
-        arch = (archetype or "curiosity").lower()
-        combined = f"{topic} {title} {hook} {transcript}".lower()
+        arch = (archetype or "curiosity").strip().lower()
+        arch = {
+            "red_alert": "warning",
+            "authority": "formula",
+            "blueprint": "formula",
+            "podcast_authority": "formula",
+        }.get(arch, arch)
+        return cls.generate_ai_copy_variations(
+            topic=topic,
+            title=title,
+            hook=hook,
+            transcript=transcript,
+            archetypes=[arch],
+        )[arch]
 
-        # Speaker detection from title or transcript
-        spk = "PODCAST GUEST"
-        if "attia" in combined and "ovadia" in combined:
-            spk = "DR. ATTIA vs. OVADIA"
-        elif "attia" in combined:
-            spk = "DR. PETER ATTIA"
-        elif "ovadia" in combined:
-            spk = "DR. PHILIP OVADIA"
-        elif "huberman" in combined:
-            spk = "ANDREW HUBERMAN"
-        elif "hormozi" in combined:
-            spk = "ALEX HORMOZI"
-        elif "rogan" in combined:
-            spk = "JOE ROGAN PODCAST"
-        elif "diary of a ceo" in combined or "bartlett" in combined:
-            spk = "STEVEN BARTLETT"
-        elif exact_topic:
-            first_w = exact_topic.split()[0].upper()
-            if first_w in {"ARE", "WHY", "HOW", "MAYBE", "THE", "WHAT", "THIS", "IF", "WHEN"} and len(exact_topic.split()) > 1:
-                first_w = exact_topic.split()[1].upper()
-            if first_w not in {"ARE", "WHY", "HOW", "MAYBE", "THE", "WHAT", "THIS", "IF", "WHEN"}:
-                spk = f"{first_w} EXPERT"
+    @classmethod
+    def generate_ai_copy_variations(
+        cls,
+        topic: str = "",
+        title: str = "",
+        hook: str = "",
+        transcript: str = "",
+        archetypes: Optional[List[str]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        aliases = {
+            "red_alert": "warning",
+            "authority": "formula",
+            "blueprint": "formula",
+            "podcast_authority": "formula",
+        }
+        requested = list(dict.fromkeys(
+            aliases.get((item or "curiosity").strip().lower(), (item or "curiosity").strip().lower())
+            for item in (archetypes or ["curiosity", "warning", "formula", "callout"])
+        ))
+        supported = {"curiosity", "warning", "formula", "callout"}
+        invalid = [item for item in requested if item not in supported]
+        if invalid:
+            raise ValueError(f"Unsupported thumbnail copy archetype: {invalid[0]}.")
+
+        context = (
+            f"Topic: {str(topic or '')[:300]}\n"
+            f"Clip title: {str(title or '')[:300]}\n"
+            f"Existing hook: {str(hook or '')[:400]}\n"
+            f"Transcript excerpt: {str(transcript or '')[:3500]}"
+        )
+        response_shape = {
+            arch: {
+                "topic_phrase": "specific subject, 1-3 words",
+                "badge": "short category, 1-2 words",
+                "headline_white": "natural opening phrase, up to 4 words",
+                "headline_yellow_1": "clearest supported idea, up to 4 words",
+                "headline_yellow_2": "useful supporting phrase, up to 4 words or empty",
+            }
+            for arch in requested
+        }
+        prompt = (
+            "Write short TikTok cover copy using only facts and meaning supported by this clip. "
+            "Return one JSON object with exactly these top-level keys and no list:\n"
+            f"{json.dumps(response_shape, ensure_ascii=False)}\n"
+            "Keep topic_phrase specific to the actual subject, not a hook or question. Make the opening and main "
+            "idea sound natural when read aloud. Keep each headline phrase to 4 words or fewer. "
+            "Prefer exact words or short direct paraphrases from the title and transcript. Never reverse a point "
+            "or pair opposite descriptions (for example, do not call easy days hard unless the speaker does). "
+            "Use curiosity for a specific open loop, warning only for a risk actually discussed, formula only for "
+            "steps or a framework present in the clip, and callout only for an audience supported by the context. "
+            "Avoid generic slogans (including 'unlock your potential'), fake statistics, credentials, promises, "
+            "false urgency, and claims not stated in the context. Do not invent a speaker name. "
+            f"Requested archetypes: {', '.join(requested)}.\n\nClip context:\n{context}"
+        )
+
+        ai_result = None
+        ai_warning = None
+        try:
+            parsed, ai_result = MultiModelAIEngine.get_instance().generate_json(
+                prompt,
+                system_prompt="You write accurate, minimal social video cover copy. Never invent facts.",
+                role="primary",
+                timeout=90.0,
+            )
+            if not isinstance(parsed, dict):
+                raise AIEngineError("Thumbnail copy response did not contain a JSON object.")
+            variations = parsed.get("variations")
+            if isinstance(variations, list):
+                by_arch = {
+                    str(item.get("archetype", "")).strip().lower(): item
+                    for item in variations
+                    if isinstance(item, dict)
+                }
             else:
-                spk = "PODCAST SPECIALIST"
+                by_arch = {
+                    arch: parsed.get(arch)
+                    for arch in requested
+                    if isinstance(parsed.get(arch), dict)
+                }
+        except AIEngineError as exc:
+            by_arch = {}
+            ai_warning = str(exc)
+            print(f"[Thumbnail Copy] Local AI unavailable; using concise fallback copy: {exc}")
 
-        # Archetype Specific Copy Generation
-        if arch in ("warning", "red_alert"):
-            pill_badge = "CRITICAL WARNING"
-            hw = "THE FATAL MISTAKE IN"
-            hy1 = exact_topic
-            hy2 = "DO NOT IGNORE THIS"
-            spk_tag = "URGENT HEALTH ALERT"
-            accent_color = "#EF4444"
-        elif arch in ("authority", "formula", "blueprint", "podcast_authority"):
-            pill_badge = "EXPERT BLUEPRINT"
-            hw = "THE PROVEN PROTOCOL:"
-            hy1 = exact_topic
-            hy2 = "STEP BY STEP GUIDE"
-            spk_tag = "EXPERT MASTERCLASS"
-            accent_color = "#00E5FF"
-        else:  # curiosity (default)
-            pill_badge = "UNTOLD TRUTH"
-            hw = "THE HIDDEN TRUTH ABOUT"
-            hy1 = exact_topic
-            hy2 = "NO ONE TALKS ABOUT"
-            spk_tag = "EXCLUSIVE INSIGHT"
-            accent_color = "#FFE600"
+        result: Dict[str, Dict[str, Any]] = {}
+        for arch in requested:
+            data = by_arch.get(arch)
+            if data is None:
+                warning = ai_warning or f"The AI response omitted the {arch} variation."
+                result[arch] = cls._fallback_ai_copy(
+                    topic=topic,
+                    title=title,
+                    hook=hook,
+                    transcript=transcript,
+                    archetype=arch,
+                    warning=warning,
+                )
+                continue
+
+            exact_topic = cls._clean_ai_phrase(data.get("topic_phrase"), 3, 32) or cls._clean_copy_field(
+                cls.extract_clean_topic(topic=topic, title=title, hook=hook, transcript=transcript),
+                max_words=3,
+                max_chars=32,
+            )
+            headline_white = cls._clean_ai_phrase(data.get("headline_white"), 4, 38)
+            headline_yellow_1 = cls._clean_ai_phrase(data.get("headline_yellow_1"), 4, 38)
+            headline_yellow_2 = cls._clean_ai_phrase(data.get("headline_yellow_2"), 4, 38)
+            if not exact_topic or not headline_white or not headline_yellow_1:
+                result[arch] = cls._fallback_ai_copy(
+                    topic=topic,
+                    title=title,
+                    hook=hook,
+                    transcript=transcript,
+                    archetype=arch,
+                    warning=f"The AI returned incomplete {arch} copy.",
+                )
+                continue
+
+            source_context = re.sub(r"\s+", " ", f"{topic} {title} {hook} {transcript}")
+            fallback = cls._fallback_ai_copy(
+                topic=topic,
+                title=title,
+                hook=hook,
+                transcript=transcript,
+                archetype=arch,
+                warning="AI copy did not stay grounded in the clip context.",
+            )
+            copy_warnings = [ai_result["warning"]] if ai_result and ai_result.get("warning") else []
+            if not cls._copy_is_grounded(exact_topic, source_context):
+                exact_topic = fallback["exact_topic"]
+                copy_warnings.append("Replaced an unsupported topic phrase.")
+            white_is_grounded = cls._copy_is_grounded(headline_white, source_context)
+            main_is_grounded = cls._copy_is_grounded(headline_yellow_1, source_context)
+            if not white_is_grounded and not main_is_grounded:
+                warning = "; ".join(copy_warnings + ["AI headline phrases were not grounded in the clip context."])
+                result[arch] = cls._fallback_ai_copy(
+                    topic=topic,
+                    title=title,
+                    hook=hook,
+                    transcript=transcript,
+                    archetype=arch,
+                    warning=warning,
+                )
+                continue
+            if not white_is_grounded:
+                headline_white = fallback["headline_white"]
+                copy_warnings.append("Replaced an unsupported opening phrase.")
+            if not main_is_grounded:
+                headline_yellow_1 = exact_topic
+                copy_warnings.append("Replaced an unsupported main phrase with the clip topic.")
+            if headline_yellow_2 and not cls._copy_is_grounded(headline_yellow_2, source_context):
+                headline_yellow_2 = ""
+                copy_warnings.append("Removed an unsupported supporting phrase.")
+
+            badge = cls._clean_ai_phrase(data.get("badge"), 2, 20) or "INSIGHT"
+            if not cls._copy_is_grounded(badge, source_context):
+                badge = fallback["pill_badge"]
+                copy_warnings.append("Replaced an unsupported topic badge.")
+            speaker_name = cls._clean_copy_field(data.get("speaker_name"), 4, 36) or "PODCAST GUEST"
+            speaker_tag = cls._clean_copy_field(data.get("speaker_tag"), 3, 28) or "PODCAST CLIP"
+            if speaker_name != "PODCAST GUEST" and speaker_name.casefold() not in source_context.casefold():
+                speaker_name = "PODCAST GUEST"
+            accent = {
+                "curiosity": "#FFE600",
+                "warning": "#EF4444",
+                "formula": "#00E5FF",
+                "callout": "#22C55E",
+            }[arch]
+            result[arch] = {
+                "archetype": arch,
+                "exact_topic": exact_topic,
+                "pill_badge": badge,
+                "headline_white": headline_white,
+                "headline_yellow_1": headline_yellow_1,
+                "headline_yellow_2": headline_yellow_2,
+                "headline_1": headline_white,
+                "headline_2": headline_yellow_1,
+                "speaker_name": speaker_name,
+                "speaker_tag": speaker_tag,
+                "category": badge,
+                "subheadline": headline_yellow_2,
+                "takeaways": [headline_white, headline_yellow_1, headline_yellow_2 or exact_topic],
+                "tag_badge": badge,
+                "stat_badge": "",
+                "accent_color": accent,
+                "generation_source": "ollama",
+                "model": ai_result.get("model", "") if ai_result else "",
+                "generation_warning": "; ".join(copy_warnings) or None,
+            }
+        return result
+
+    @staticmethod
+    def _clean_copy_field(value: Any, max_words: int, max_chars: int) -> str:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        words = text.split()[:max_words]
+        return " ".join(words)[:max_chars].strip().upper()
+
+    @staticmethod
+    def _clean_ai_phrase(value: Any, max_words: int, max_chars: int) -> str:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if not text or len(text) > max_chars or len(text.split()) > max_words:
+            return ""
+        return text.upper()
+
+    @staticmethod
+    def _copy_is_grounded(text: str, context: str) -> bool:
+        stop_words = {
+            "a", "an", "the", "for", "of", "and", "is", "are", "to", "what", "why", "how",
+            "here", "now", "your", "you", "we", "it", "with", "from", "in", "on", "by", "if",
+            "can", "will", "should", "must", "be", "no", "not", "does", "do", "that", "this",
+            "as", "more", "less", "each", "then", "than",
+        }
+        number_words = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5"}
+
+        def normalize(word: str) -> str:
+            word = number_words.get(word, word)
+            if len(word) > 5 and word.endswith("ing"):
+                word = word[:-3]
+            elif len(word) > 4 and word.endswith("ed"):
+                word = word[:-2]
+            elif len(word) > 3 and word.endswith("s"):
+                word = word[:-1]
+            return word
+
+        source_terms = {
+            normalize(word)
+            for word in re.findall(r"[a-z0-9]+", context.casefold())
+            if word not in stop_words
+        }
+        copy_terms = {
+            normalize(word)
+            for word in re.findall(r"[a-z0-9]+", text.casefold())
+            if word not in stop_words
+        }
+        source_text = re.sub(r"\s+", " ", context.casefold())
+        copy_text = re.sub(r"\s+", " ", text.casefold())
+        easy_days_are_easy = re.search(
+            r"\beasy days?\b[^.!?]{0,24}\beasy\b", source_text
+        )
+        easy_days_are_hard = re.search(
+            r"\beasy days?\b[^.!?]{0,24}\bhard\b", source_text
+        )
+        if (
+            re.search(r"\beasy days?\b[^.!?]{0,24}\bhard\b", copy_text)
+            and easy_days_are_easy
+            and not easy_days_are_hard
+        ):
+            return False
+        return bool(copy_terms) and copy_terms.issubset(source_terms)
+
+    @classmethod
+    def _fallback_ai_copy(
+        cls,
+        topic: str,
+        title: str,
+        hook: str,
+        transcript: str,
+        archetype: str,
+        warning: str,
+    ) -> Dict[str, Any]:
+        exact_topic = cls._clean_copy_field(
+            cls.extract_clean_topic(topic=topic, title=title, hook=hook, transcript=transcript),
+            max_words=3,
+            max_chars=32,
+        ) or "PODCAST HIGHLIGHT"
+        fallback_lines = {
+            "curiosity": ("INSIGHT", "THE REAL STORY", "WHAT MATTERS"),
+            "warning": ("CAUTION", "WHAT TO WATCH", "A PRACTICAL NOTE"),
+            "formula": ("FRAMEWORK", "A CLEAR GUIDE", "KEY STEPS"),
+            "callout": ("FOR YOU", "START HERE", "A USEFUL IDEA"),
+        }
+        badge, headline_white, headline_yellow_2 = fallback_lines[archetype]
+        combined = f"{title} {hook} {transcript}".lower()
+        speaker = "PODCAST GUEST"
+        for needle, name in (
+            ("peter attia", "PETER ATTIA"),
+            ("philip ovadia", "PHILIP OVADIA"),
+            ("andrew huberman", "ANDREW HUBERMAN"),
+            ("alex hormozi", "ALEX HORMOZI"),
+            ("joe rogan", "JOE ROGAN"),
+            ("steven bartlett", "STEVEN BARTLETT"),
+        ):
+            if needle in combined:
+                speaker = name
+                break
 
         return {
-            "archetype": arch,
+            "archetype": archetype,
             "exact_topic": exact_topic,
-            "pill_badge": pill_badge,
-            "headline_white": hw,
-            "headline_yellow_1": hy1,
-            "headline_yellow_2": hy2,
-            "headline_1": hw,
-            "headline_2": f"{hy1} {hy2}".strip(),
-            "speaker_name": spk,
-            "speaker_tag": spk_tag,
-            "category": pill_badge,
-            "subheadline": f"{hw} {hy1} {hy2}".strip(),
-            "takeaways": [f"1. {hw} {hy1}", "2. AVOID CRITICAL ERRORS", "3. PROVEN RESULTS"],
-            "tag_badge": pill_badge,
-            "stat_badge": "100% VERIFIED",
-            "accent_color": accent_color
+            "pill_badge": badge,
+            "headline_white": headline_white,
+            "headline_yellow_1": exact_topic,
+            "headline_yellow_2": headline_yellow_2,
+            "headline_1": headline_white,
+            "headline_2": exact_topic,
+            "speaker_name": speaker,
+            "speaker_tag": "PODCAST CLIP",
+            "category": badge,
+            "subheadline": headline_yellow_2,
+            "takeaways": [headline_white, exact_topic, headline_yellow_2],
+            "tag_badge": badge,
+            "stat_badge": "",
+            "accent_color": {
+                "curiosity": "#FFE600",
+                "warning": "#EF4444",
+                "formula": "#00E5FF",
+                "callout": "#22C55E",
+            }[archetype],
+            "generation_source": "heuristic_fallback",
+            "model": "",
+            "generation_warning": warning,
         }
 
     @classmethod
@@ -616,6 +880,12 @@ class TikTokThumbnailDesigner:
         4. Validates 9:16 vertical geometry and TikTok Safe Zones.
         """
         out_p = Path(output_jpg_path)
+        archetype = {
+            "red_alert": "warning",
+            "authority": "formula",
+            "blueprint": "formula",
+            "podcast_authority": "formula",
+        }.get((archetype or "curiosity").strip().lower(), (archetype or "curiosity").strip().lower())
         out_p.parent.mkdir(parents=True, exist_ok=True)
         temp_speaker_frame = TEMP_DIR / f"speaker_frame_{out_p.stem}.jpg"
 
@@ -631,7 +901,13 @@ class TikTokThumbnailDesigner:
         )
 
         # 2. Topic-Aware Editorial Headline Copy with Archetype Specialization
-        if not copy_data or copy_data.get("archetype") != archetype or not copy_data.get("exact_topic"):
+        if (
+            not copy_data
+            or copy_data.get("archetype") != archetype
+            or not copy_data.get("exact_topic")
+            or not copy_data.get("headline_white")
+            or not copy_data.get("headline_yellow_1")
+        ):
             copy_data = cls.generate_ai_copy(
                 topic=topic,
                 title=title,
@@ -830,78 +1106,36 @@ class TikTokThumbnailDesigner:
         exact_topic: str = "",
         pill_badge: str = ""
     ) -> None:
-        """
-        Renders the Left-Aligned Editorial Typography:
-        - Category & Exact Topic Pill Badge at Y: 380
-        - Line 1: Opening Hook in Pure White (Auto-scaled)
-        - Line 2: Highlighted Ribbon Banner displaying EXACT TOPIC (Auto-scaled)
-        - Line 3: Supporting Punchline Hook + Curved Accent Underline (Auto-scaled)
-        - Bottom Authority Nameplate (Y: 1560)
-        """
-        start_x = 75
-        curr_y = 380
-        max_w = 540  # Keep left of speaker
-
-        # 1. Top Frosted Category & Exact Topic Pill Badge
-        topic_display = exact_topic or hy1 or "PODCAST HIGHLIGHT"
-        badge_display = pill_badge or "TOPIC"
-        pill_text = f"{badge_display} • {topic_display}"
-        font_pill = get_font(FONT_SEGOE_BOLD, 24)
-        p_bbox = font_pill.getbbox(pill_text)
-        pw = min(p_bbox[2] - p_bbox[0] + 36, max_w)
-        ph = 42
-
-        # Draw rounded pill with dark background and glowing accent border
+        start_x = 72
+        max_w = 640
+        badge = cls._clean_copy_field(pill_badge or "INSIGHT", 2, 20)
+        font_pill = get_font(FONT_SEGOE_BOLD, 23)
+        badge_box = font_pill.getbbox(badge)
+        badge_w = badge_box[2] - badge_box[0] + 36
+        badge_y = 300
         draw.rounded_rectangle(
-            [start_x, curr_y, start_x + pw, curr_y + ph],
-            radius=12,
-            fill=(10, 12, 16, 220),
-            outline=(*accent_rgb, 240),
-            width=2
+            [start_x, badge_y, start_x + badge_w, badge_y + 48],
+            radius=13,
+            fill=(10, 12, 16, 235),
+            outline=(*accent_rgb, 255),
+            width=2,
         )
-        draw.text((start_x + 18, curr_y + 8), pill_text[:38], font=font_pill, fill=(255, 255, 255, 255))
-        curr_y += ph + 24
+        draw.text((start_x + 18, badge_y + 10), badge, font=font_pill, fill=(255, 255, 255, 255))
 
-        # 2. Line 1: Opening Hook in Pure White (Auto-scaled)
-        if hw:
-            hw_str = hw.strip().upper()
-            f1, tw1, th1 = cls.fit_text_font(hw_str, max_w=max_w, base_size=90, min_size=46)
-            draw_text_with_stroke_and_shadow(
-                draw, (start_x, curr_y), hw_str, f1,
-                fill=(255, 255, 255, 255),
-                stroke_fill=(0, 0, 0, 240),
-                stroke_width=6,
-                shadow_offset=(4, 6)
-            )
-            curr_y += th1 + 22
+        opening_bottom = cls._draw_spaced_copy_block(
+            draw, hw, start_x, 455, max_w, 112, 64, (255, 255, 255, 255),
+            max_lines=2, stroke_width=6,
+        )
+        highlight_y = max(710, opening_bottom + 52)
+        highlight_bottom = cls._draw_highlight_copy_block(
+            draw, hy1, start_x, highlight_y, max_w, accent_rgb,
+        )
+        support_y = max(995, highlight_bottom + 48)
+        cls._draw_spaced_copy_block(
+            draw, hy2, start_x, support_y, max_w, 70, 50, (255, 255, 255, 255),
+            max_lines=2, stroke_width=4,
+        )
 
-        # 3. Line 2: Highlighted Ribbon Banner displaying EXACT TOPIC (Auto-scaled)
-        if hy1:
-            hy1_str = hy1.strip().upper()
-            f2, tw2, th2 = cls.fit_text_font(hy1_str, max_w=max_w - 40, base_size=96, min_size=46)
-            bx = start_x - 12
-            by = curr_y
-            bw = min(tw2 + 48, max_w + 20)
-            bh = th2 + 28
-            cls._draw_brush_ribbon(draw, bx, by, bw, bh, fill=(*accent_rgb, 255))
-            draw.text((bx + 20, by + 12), hy1_str, font=f2, fill=(12, 12, 14, 255))
-            curr_y = by + bh + 20
-
-        # 4. Line 3: Supporting Punchline Hook + Curved Accent Underline (Auto-scaled)
-        if hy2:
-            hy2_str = hy2.strip().upper()
-            f3, tw3, th3 = cls.fit_text_font(hy2_str, max_w=max_w, base_size=82, min_size=44)
-            draw_text_with_stroke_and_shadow(
-                draw, (start_x, curr_y), hy2_str, f3,
-                fill=(*accent_rgb, 255),
-                stroke_fill=(0, 0, 0, 240),
-                stroke_width=6,
-                shadow_offset=(4, 6)
-            )
-            curr_y += th3 + 14
-            cls._draw_red_curved_stroke(draw, ux=start_x, uy=curr_y, uw=min(tw3 + 30, max_w - 40))
-
-        # 5. Authority Nameplate at bottom
         cls._render_authority_nameplate(draw, W, H, spk_name, spk_tag, accent_rgb)
 
     @classmethod
@@ -919,43 +1153,151 @@ class TikTokThumbnailDesigner:
         exact_topic: str = "",
         pill_badge: str = ""
     ) -> None:
-        """
-        Renders Dual-Speaker Editorial Typography centered between host and guest.
-        """
-        curr_y = 500
-        max_w = 700
-        topic_display = exact_topic or hy1 or "PODCAST HIGHLIGHT"
-        badge_display = pill_badge or "TOPIC"
-        pill_text = f"{badge_display} • {topic_display}"
-        font_pill = get_font(FONT_SEGOE_BOLD, 24)
-        p_bbox = font_pill.getbbox(pill_text)
-        pw = min(p_bbox[2] - p_bbox[0] + 36, max_w)
-        ph = 42
-        px = (W - pw) // 2
-        draw.rounded_rectangle([px, curr_y, px + pw, curr_y + ph], radius=12, fill=(10, 12, 16, 220), outline=(*accent_rgb, 240), width=2)
-        draw.text((px + 18, curr_y + 8), pill_text[:40], font=font_pill, fill=(255, 255, 255, 255))
-        curr_y += ph + 28
-
-        lines = [
-            (hw.strip().upper(), (255, 255, 255)),
-            (hy1.strip().upper(), accent_rgb),
-            (hy2.strip().upper(), (255, 255, 255))
-        ]
-        for txt, col in lines:
-            if not txt:
-                continue
-            f, tw, th = cls.fit_text_font(txt, max_w=max_w, base_size=92, min_size=46)
-            tx = (W - tw) // 2
-            draw_text_with_stroke_and_shadow(
-                draw, (tx, curr_y), txt, f,
-                fill=(*col, 255),
-                stroke_fill=(0, 0, 0, 240),
-                stroke_width=7,
-                shadow_offset=(4, 7)
-            )
-            curr_y += th + 22
-
+        max_w = 840
+        badge = cls._clean_copy_field(pill_badge or "INSIGHT", 2, 20)
+        font_pill = get_font(FONT_SEGOE_BOLD, 23)
+        badge_box = font_pill.getbbox(badge)
+        badge_w = badge_box[2] - badge_box[0] + 36
+        badge_x = (W - badge_w) // 2
+        draw.rounded_rectangle(
+            [badge_x, 300, badge_x + badge_w, 348],
+            radius=13,
+            fill=(10, 12, 16, 235),
+            outline=(*accent_rgb, 255),
+            width=2,
+        )
+        draw.text((badge_x + 18, 310), badge, font=font_pill, fill=(255, 255, 255, 255))
+        opening_bottom = cls._draw_spaced_copy_block(
+            draw, hw, (W - max_w) // 2, 455, max_w, 112, 64, (255, 255, 255, 255),
+            max_lines=2, stroke_width=6, align="center",
+        )
+        highlight_y = max(710, opening_bottom + 52)
+        highlight_bottom = cls._draw_highlight_copy_block(
+            draw, hy1, (W - max_w) // 2, highlight_y, max_w, accent_rgb, align="center",
+        )
+        cls._draw_spaced_copy_block(
+            draw, hy2, (W - max_w) // 2, max(995, highlight_bottom + 48), max_w,
+            70, 50, (255, 255, 255, 255), max_lines=2, stroke_width=4, align="center",
+        )
         cls._render_authority_nameplate(draw, W, H, spk_name, spk_tag, accent_rgb)
+
+    @classmethod
+    def _fit_wrapped_lines(
+        cls,
+        text: str,
+        max_w: int,
+        base_size: int,
+        min_size: int,
+        max_lines: int = 2,
+    ) -> Tuple[ImageFont.FreeTypeFont, List[str]]:
+        words = re.sub(r"\s+", " ", str(text or "")).strip().upper().split()
+        if not words:
+            return get_font(FONT_IMPACT, min_size), []
+
+        size = base_size
+        while size >= min_size:
+            font = get_font(FONT_IMPACT, size)
+            lines: List[str] = []
+            current = ""
+            for word in words:
+                candidate = f"{current} {word}".strip()
+                if font.getbbox(candidate)[2] - font.getbbox(candidate)[0] <= max_w:
+                    current = candidate
+                elif current:
+                    lines.append(current)
+                    current = word
+                else:
+                    current = word
+            if current:
+                lines.append(current)
+            if len(lines) <= max_lines and all(
+                font.getbbox(line)[2] - font.getbbox(line)[0] <= max_w for line in lines
+            ):
+                return font, lines
+            size -= 4
+
+        font = get_font(FONT_IMPACT, min_size)
+        lines = []
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            if current and font.getbbox(candidate)[2] - font.getbbox(candidate)[0] > max_w:
+                lines.append(current)
+                current = word
+            else:
+                current = candidate
+        if current:
+            lines.append(current)
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+            last = lines[-1]
+            while last and font.getbbox(last + "...")[2] - font.getbbox(last + "...")[0] > max_w:
+                last = last.rsplit(" ", 1)[0] if " " in last else last[:-1]
+            lines[-1] = (last + "...") if last else "..."
+        return font, lines
+
+    @classmethod
+    def _draw_spaced_copy_block(
+        cls,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        x: int,
+        y: int,
+        max_w: int,
+        base_size: int,
+        min_size: int,
+        fill: tuple,
+        max_lines: int = 2,
+        stroke_width: int = 4,
+        align: str = "left",
+    ) -> int:
+        font, lines = cls._fit_wrapped_lines(text, max_w, base_size, min_size, max_lines)
+        cursor_y = y
+        for line in lines:
+            bbox = font.getbbox(line)
+            line_w = bbox[2] - bbox[0]
+            line_h = bbox[3] - bbox[1]
+            line_x = x + (max_w - line_w) // 2 if align == "center" else x
+            draw_text_with_stroke_and_shadow(
+                draw,
+                (line_x, cursor_y),
+                line,
+                font,
+                fill=fill,
+                stroke_fill=(0, 0, 0, 245),
+                stroke_width=stroke_width,
+                shadow_offset=(3, 5),
+            )
+            cursor_y += line_h + 18
+        return cursor_y
+
+    @classmethod
+    def _draw_highlight_copy_block(
+        cls,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        x: int,
+        y: int,
+        max_w: int,
+        accent_rgb: Tuple[int, int, int],
+        align: str = "left",
+    ) -> int:
+        font, lines = cls._fit_wrapped_lines(text, max_w - 24, 100, 64, 2)
+        cursor_y = y
+        for line in lines:
+            bbox = font.getbbox(line)
+            line_w = bbox[2] - bbox[0]
+            line_h = bbox[3] - bbox[1]
+            ribbon_w = min(max_w, line_w + 48)
+            ribbon_x = x + (max_w - ribbon_w) // 2 if align == "center" else x
+            ribbon_h = line_h + 28
+            cls._draw_brush_ribbon(
+                draw, ribbon_x - 6, cursor_y, ribbon_w, ribbon_h, fill=(*accent_rgb, 255)
+            )
+            text_x = ribbon_x + (ribbon_w - line_w) // 2 if align == "center" else ribbon_x + 22
+            draw.text((text_x, cursor_y + 12), line, font=font, fill=(12, 12, 14, 255))
+            cursor_y += ribbon_h + 14
+        return cursor_y
 
     @classmethod
     def _draw_brush_ribbon(
@@ -968,18 +1310,22 @@ class TikTokThumbnailDesigner:
         fill: tuple
     ) -> None:
         """Renders an organic editorial brush highlight badge with distressed edges."""
-        # Solid core with rounded corners
-        draw.rounded_rectangle([bx + 14, by, bx + bw - 14, by + bh], radius=8, fill=fill)
-        # Left jagged brush edge
+        # Keep the brush accents proportional to the text height.
+        edge = max(4, int(bh * 0.18))
+        draw.rounded_rectangle(
+            [bx + 12, by, bx + bw - 12, by + bh],
+            radius=max(6, int(bh * 0.12)),
+            fill=fill,
+        )
         left_poly = [
-            (bx + 16, by), (bx + 2, by + 16), (bx + 10, by + 36), (bx - 4, by + 58),
-            (bx + 12, by + 82), (bx + 3, by + 104), (bx + 18, by + bh), (bx + 24, by)
+            (bx + 16, by), (bx + 2, by + edge), (bx + 10, by + bh // 2),
+            (bx - 4, by + int(bh * 0.72)), (bx + 12, by + bh), (bx + 24, by + bh),
         ]
         draw.polygon(left_poly, fill=fill)
-        # Right jagged brush edge
         right_poly = [
-            (bx + bw - 18, by), (bx + bw - 2, by + 18), (bx + bw + 6, by + 48),
-            (bx + bw - 4, by + 76), (bx + bw + 10, by + 98), (bx + bw - 16, by + bh), (bx + bw - 24, by)
+            (bx + bw - 24, by), (bx + bw - 8, by + edge),
+            (bx + bw + 6, by + int(bh * 0.42)), (bx + bw - 4, by + int(bh * 0.7)),
+            (bx + bw + 10, by + bh), (bx + bw - 16, by + bh),
         ]
         draw.polygon(right_poly, fill=fill)
 
@@ -1023,16 +1369,16 @@ class TikTokThumbnailDesigner:
         LONGEVITY EXPERT
         Positioned cleanly at X: 640-680, Y: 1560 (safely inside 3:4 profile grid and above TikTok captions).
         """
-        font_name = get_font(FONT_SEGOE_BOLD, 30)
-        font_tag = get_font(FONT_SEGOE_REG, 20)
-
         name_str = spk_name.strip().upper()
         tag_str = spk_tag.strip().upper()
-
-        bbox_n = font_name.getbbox(name_str)
-        nw = bbox_n[2] - bbox_n[0]
-        nx = max(580, W - nw - 100)
-        ny = 1570
+        font_name, nw, _ = cls.fit_text_font(
+            name_str, max_w=W - 144, base_size=30, min_size=20, font_path=FONT_SEGOE_BOLD
+        )
+        font_tag, _, _ = cls.fit_text_font(
+            tag_str, max_w=W - 144, base_size=20, min_size=15, font_path=FONT_SEGOE_REG
+        )
+        nx = max(72, W - nw - 72)
+        ny = 1510
 
         # Speaker Name
         draw_text_with_stroke_and_shadow(
@@ -1044,7 +1390,7 @@ class TikTokThumbnailDesigner:
         )
 
         # Warm Gold Accent Rule
-        line_w = max(nw, 220)
+        line_w = min(W - nx - 72, max(nw, 220))
         draw.line([nx, ny + 40, nx + line_w, ny + 40], fill=(*accent_rgb, 240), width=3)
 
         # Authority Tag / Subtitle

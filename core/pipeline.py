@@ -39,10 +39,7 @@ class ClipForgePipeline:
             model_size=self.config["whisper_model"],
             device=self.config["device"]
         )
-        self.viral_detector = ViralDetector(
-            ollama_url=self.config["ollama_url"],
-            model=self.config["ollama_model"]
-        )
+        self.viral_detector = ViralDetector()
         self.face_tracker = SmartFaceTracker(
             smooth_factor=self.config["smooth_factor"]
         )
@@ -75,6 +72,7 @@ class ClipForgePipeline:
         top_padding: float = 0.0,
         bottom_padding: float = 0.0,
         language: Optional[str] = "en",
+        ai_processing_mode: Optional[str] = None,
         progress_cb: Optional[Callable[[str, float], None]] = None
     ) -> Dict[str, Any]:
         """
@@ -138,7 +136,8 @@ class ClipForgePipeline:
             max_seconds=max_clip_seconds,
             top_k=max_clips,
             clip_mode=clip_mode,
-            progress_cb=viral_sub_progress
+            progress_cb=viral_sub_progress,
+            processing_mode=ai_processing_mode,
         )
 
         update_progress(
@@ -159,7 +158,8 @@ class ClipForgePipeline:
                 max_seconds=relax_max,
                 top_k=max(1, max_clips),
                 clip_mode="highlights",
-                progress_cb=viral_sub_progress
+                progress_cb=viral_sub_progress,
+                processing_mode=ai_processing_mode,
             )
             if not viral_clips:
                 dur = min(relax_max, transcription_result["duration"])
@@ -187,7 +187,8 @@ class ClipForgePipeline:
                 min_seconds=relax_min,
                 max_seconds=relax_max,
                 top_k=max_clips,
-                clip_mode="highlights"
+                clip_mode="highlights",
+                processing_mode=ai_processing_mode,
             )
             for mc in more_clips:
                 # Add if not overlapping with existing clips
@@ -341,15 +342,15 @@ class ClipForgePipeline:
 
             # Generate AI viral copy data for both video top headline and companion thumbnail
             copy_data = None
-            try:
-                copy_data = TikTokThumbnailDesigner.generate_ai_copy(
-                    topic=clip.get("topic", ""),
-                    title=clip.get("title", ""),
-                    hook=clip.get("hook", ""),
-                    transcript=clip.get("full_transcript", "")
-                )
-            except Exception as copy_err:
-                print(f"[Headline Copy Warning] AI copy fallback: {copy_err}")
+            copy_variations = TikTokThumbnailDesigner.generate_ai_copy_variations(
+                topic=clip.get("topic", ""),
+                title=clip.get("title", ""),
+                hook=clip.get("hook", ""),
+                transcript=clip.get("full_transcript", "")
+            )
+            copy_data = copy_variations.get("curiosity")
+            if copy_data and copy_data.get("generation_warning"):
+                print(f"[Headline Copy Warning] {copy_data['generation_warning']}")
 
             if custom_headline:
                 banner_headline = custom_headline
@@ -438,13 +439,19 @@ class ClipForgePipeline:
                 t_filename = f"{safe_topic_name}_{t_suffix}.jpg"
                 t_folder_path = clip_dir / t_filename
                 t_flat_path = OUTPUTS_DIR / t_filename
+                cover_copy = copy_variations.get(t_arch)
+                copy_source = (
+                    f"copy by {cover_copy['model']}"
+                    if cover_copy and cover_copy.get("generation_source") == "ollama" and cover_copy.get("model")
+                    else "safe local fallback copy"
+                )
                 try:
                     update_progress(
                         f"Clip {idx}/{total_clips}: Designing {t_label} cover...",
                         base_pct + 25,
                         step=5,
                         step_name="Render & Covers",
-                        detail=f"Designing {t_label} cover thumbnail for TikTok"
+                        detail=f"Designing TikTok cover with {copy_source}"
                     )
                     TikTokThumbnailDesigner.create_tiktok_thumbnail(
                         video_path=str(rendered_path),
@@ -456,7 +463,7 @@ class ClipForgePipeline:
                         crop_filter=crop_filter,
                         source_clean_video=render_src_video,
                         timestamp_sec=min(2.0, max(0.8, render_dur * 0.2)),
-                        copy_data=None,
+                        copy_data=cover_copy,
                         style=t_style,
                         accent_color=t_accent,
                         archetype=t_arch
@@ -576,6 +583,7 @@ class ClipForgePipeline:
             "source_video": str(video_p),
             "duration": transcription_result["duration"],
             "language": transcription_result["language"],
+            "ai_processing_mode": ai_processing_mode or self.viral_detector.ai_engine.get_settings()["processing_mode"],
             "total_clips": len(rendered_clips),
             "clips": rendered_clips,
             "virality_timeline": virality_timeline,
