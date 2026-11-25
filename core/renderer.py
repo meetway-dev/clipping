@@ -1,7 +1,7 @@
 import os
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Callable
 from .config import FFMPEG_PATH, OUTPUTS_DIR, TEMP_DIR
 from .bgm_manager import BGMManager
 from .audio_enhancer import MediaEnhancer
@@ -58,7 +58,8 @@ class VideoRenderer:
         watermark_text: Optional[str] = None,
         watermark_position: str = "top_right",
         enable_voice_clarifier: bool = False,
-        enable_loudnorm: bool = True
+        enable_loudnorm: bool = True,
+        progress_cb: Optional[Callable[[float], None]] = None
     ) -> Path:
         """
         Renders a finished 9:16 viral video clip with burned animated subtitles,
@@ -207,11 +208,41 @@ class VideoRenderer:
                 "-movflags", "+faststart",
                 str(output_path)
             ]
+            if progress_cb:
+                cmd[-1:-1] = ["-progress", "pipe:1", "-nostats"]
 
             print(f"[Renderer] Executing FFmpeg render ({enc['name']}): {' '.join(cmd[:12])}...")
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if progress_cb:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace"
+                )
+                output_tail = []
+                if process.stdout:
+                    for line in process.stdout:
+                        line = line.rstrip()
+                        if line:
+                            output_tail.append(line)
+                            if len(output_tail) > 40:
+                                output_tail.pop(0)
+                        if line.startswith("out_time_us="):
+                            try:
+                                elapsed = int(line.partition("=")[2]) / 1_000_000
+                                progress_cb(min(99.0, max(0.0, elapsed / max(duration, 0.1) * 100)))
+                            except ValueError:
+                                pass
+                return_code = process.wait()
+                error_output = "\n".join(output_tail)
+            else:
+                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                return_code = result.returncode
+                error_output = result.stderr
 
-            if result.returncode == 0:
+            if return_code == 0:
                 # Generate crisp 1080x1920 TikTok cover thumbnail image with the same name as the video
                 thumb_path = output_path.with_suffix(".jpg")
                 try:
@@ -219,10 +250,12 @@ class VideoRenderer:
                     self.generate_thumbnail(str(output_path), str(thumb_path), timestamp_sec=thumb_ts)
                 except Exception as te:
                     print(f"[Renderer Warning] Thumbnail generation failed: {te}")
+                if progress_cb:
+                    progress_cb(100.0)
                 return output_path
             else:
-                last_err = result.stderr
-                print(f"[Renderer Warning] Encoder {enc['name']} failed (code {result.returncode}), trying next fallback...")
+                last_err = error_output
+                print(f"[Renderer Warning] Encoder {enc['name']} failed (code {return_code}), trying next fallback...")
 
         raise RuntimeError(f"FFmpeg rendering failed: {last_err[-500:] if last_err else 'Unknown error'}")
 

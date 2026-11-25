@@ -13,9 +13,11 @@ import os
 import io
 import json
 import zipfile
+import time
 import unittest
 import sqlite3
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 
 root_dir = Path(__file__).resolve().parent.parent
@@ -198,7 +200,126 @@ class TestTimelineEditor(unittest.TestCase):
         self.assertEqual(len(editor["tracks"]), 2)
         self.assertEqual(editor["clips"][0]["id"], "clip-a")
 
-    def test_06_download_project_zip_with_edited_clips(self):
+    def test_06_background_render_job_reports_completion(self):
+        """The editor can poll a background render job through to its final result."""
+        with patch("app.apply_timeline_edits", new_callable=AsyncMock) as render:
+            render.return_value = {"status": "success", "project": {}, "clips": []}
+            response = client.post(
+                f"/api/projects/{self.project_id}/apply-timeline-edits/start",
+                json={"clips": [{"start": 5, "end": 10}]}
+            )
+            self.assertEqual(response.status_code, 202, response.text)
+            job_id = response.json()["job_id"]
+
+            for _ in range(100):
+                status = client.get(f"/api/editor-render-jobs/{job_id}")
+                self.assertEqual(status.status_code, 200, status.text)
+                if status.json()["status"] in ("completed", "failed"):
+                    break
+                time.sleep(0.01)
+
+            self.assertEqual(status.json()["status"], "completed")
+            self.assertEqual(status.json()["progress"], 100)
+            self.assertEqual(status.json()["result"]["status"], "success")
+
+    def test_07_background_render_job_exposes_failure_detail(self):
+        """A worker failure is returned to the editor instead of a generic toast."""
+        with patch("app.apply_timeline_edits", new_callable=AsyncMock) as render:
+            render.side_effect = RuntimeError("FFmpeg encoder failed")
+            response = client.post(
+                f"/api/projects/{self.project_id}/apply-timeline-edits/start",
+                json={"clips": [{"start": 5, "end": 10}]}
+            )
+            self.assertEqual(response.status_code, 202, response.text)
+            job_id = response.json()["job_id"]
+
+            for _ in range(100):
+                status = client.get(f"/api/editor-render-jobs/{job_id}")
+                if status.json()["status"] in ("completed", "failed"):
+                    break
+                time.sleep(0.01)
+
+            self.assertEqual(status.json()["status"], "failed")
+            self.assertIn("FFmpeg encoder failed", status.json()["error"])
+
+    def test_08_chapter_extract_runs_as_background_job(self):
+        """A topic chapter can be queued and its saved clip is reported as complete."""
+        with patch("app.extract_custom_clip", new_callable=AsyncMock) as extract:
+            extract.return_value = {
+                "status": "success",
+                "clip": {"id": "chapter-clip", "title": "Training Intervals"}
+            }
+            response = client.post(
+                "/api/clips/custom-extract/start",
+                json={
+                    "project_id": self.project_id,
+                    "start_sec": 15,
+                    "end_sec": 35,
+                    "title": "Training Intervals"
+                }
+            )
+            self.assertEqual(response.status_code, 202, response.text)
+            job_id = response.json()["job_id"]
+
+            for _ in range(100):
+                status = client.get(f"/api/render-jobs/{job_id}")
+                self.assertEqual(status.status_code, 200, status.text)
+                if status.json()["status"] in ("completed", "failed"):
+                    break
+                time.sleep(0.01)
+
+            self.assertEqual(status.json()["kind"], "chapter_extraction")
+            self.assertEqual(status.json()["status"], "completed")
+            self.assertEqual(status.json()["result"]["clip_id"], "chapter-clip")
+
+    def test_09_chapter_extract_rejects_out_of_range_times(self):
+        response = client.post(
+            "/api/clips/custom-extract/start",
+            json={
+                "project_id": self.project_id,
+                "start_sec": 700,
+                "end_sec": 800,
+                "title": "Invalid Chapter"
+            }
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("outside the source video", response.json()["detail"])
+
+    def test_10_custom_extract_uses_transcribed_word_for_hook(self):
+        pipeline = MagicMock()
+        pipeline.return_value.transcriber.transcribe_segment.return_value = [
+            {"word": "Running", "start": 15.0, "end": 15.3}
+        ]
+        tracker = MagicMock()
+        tracker.return_value.build_layout_filter.return_value = ("crop-filter", "speaker_focus")
+        renderer = MagicMock()
+        renderer.return_value.render_clip.return_value = OUTPUTS_DIR / "mock_custom_extract.mp4"
+        social_kit = {"caption": "Test"}
+
+        with patch("app.ClipForgePipeline", pipeline), \
+             patch("app.SmartFaceTracker", tracker), \
+             patch("app.SubtitleGenerator.create_ass_file"), \
+             patch("app.VideoRenderer", renderer), \
+             patch("app.TikTokThumbnailDesigner.create_tiktok_thumbnail"), \
+             patch("app.ViralDetector") as detector, \
+             patch("app.HistoryManager.add_single_clip") as add_clip:
+            detector.return_value.generate_social_kit.return_value = social_kit
+            response = client.post(
+                "/api/clips/custom-extract",
+                json={
+                    "project_id": self.project_id,
+                    "start_sec": 15,
+                    "end_sec": 35,
+                    "title": "Running Training"
+                }
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        clip = response.json()["clip"]
+        self.assertEqual(clip["hook"], "Running")
+        add_clip.assert_called_once()
+
+    def test_11_download_project_zip_with_edited_clips(self):
         """Verify ZIP download organizes newly edited clips in topic folders."""
         resp = client.get(f"/api/projects/{self.project_id}/download-zip")
         self.assertEqual(resp.status_code, 200)

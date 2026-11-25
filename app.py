@@ -15,11 +15,13 @@ except Exception:
 import uuid
 import shutil
 import threading
+import asyncio
 import io
 import re
 import zipfile
 import json
 import time
+import math
 import urllib.request
 import subprocess
 import cv2
@@ -88,6 +90,114 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # In-Memory Jobs Tracker
 JOBS: Dict[str, Dict[str, Any]] = {}
+EDITOR_RENDER_JOBS: Dict[str, Dict[str, Any]] = {}
+EDITOR_RENDER_JOBS_LOCK = threading.Lock()
+
+
+def _set_editor_render_progress(job_id: Optional[str], progress: float, stage: str, detail: str = ""):
+    if not job_id:
+        return
+    with EDITOR_RENDER_JOBS_LOCK:
+        job = EDITOR_RENDER_JOBS.get(job_id)
+        if job and job["status"] == "running":
+            progress = max(progress, job.get("progress", 0))
+            job.update({
+                "progress": max(0, min(100, round(progress, 1))),
+                "stage": stage,
+                "detail": detail
+            })
+
+
+def _run_editor_render_job(job_id: str, project_id: str, payload: Dict[str, Any]):
+    try:
+        with EDITOR_RENDER_JOBS_LOCK:
+            EDITOR_RENDER_JOBS[job_id].update({
+                "status": "running",
+                "stage": "Preparing render",
+                "detail": "Checking project and source video",
+                "progress": 2
+            })
+        result = asyncio.run(apply_timeline_edits(project_id, payload))
+        with EDITOR_RENDER_JOBS_LOCK:
+            EDITOR_RENDER_JOBS[job_id].update({
+                "status": "completed",
+                "progress": 100,
+                "stage": "Complete",
+                "detail": f"Rendered {len(result.get('clips', []))} clips successfully",
+                "result": {"status": result.get("status")}
+            })
+    except HTTPException as exc:
+        error = exc.detail if isinstance(exc.detail, str) else json.dumps(exc.detail, ensure_ascii=False)
+        with EDITOR_RENDER_JOBS_LOCK:
+            EDITOR_RENDER_JOBS[job_id].update({
+                "status": "failed",
+                "stage": "Render failed",
+                "detail": error,
+                "error": error
+            })
+    except Exception as exc:
+        print(f"[Editor Render Job {job_id}] {type(exc).__name__}: {exc}")
+        with EDITOR_RENDER_JOBS_LOCK:
+            EDITOR_RENDER_JOBS[job_id].update({
+                "status": "failed",
+                "stage": "Render failed",
+                "detail": str(exc) or type(exc).__name__,
+                "error": f"{type(exc).__name__}: {exc}"
+            })
+
+
+def _run_custom_extract_job(job_id: str, payload: Dict[str, Any]):
+    try:
+        with EDITOR_RENDER_JOBS_LOCK:
+            EDITOR_RENDER_JOBS[job_id].update({
+                "status": "running",
+                "stage": "Preparing chapter",
+                "detail": "Checking project and source video",
+                "progress": 2
+            })
+        result = asyncio.run(extract_custom_clip(payload))
+        clip = result.get("clip") or {}
+        with EDITOR_RENDER_JOBS_LOCK:
+            EDITOR_RENDER_JOBS[job_id].update({
+                "status": "completed",
+                "progress": 100,
+                "stage": "Chapter clip ready",
+                "detail": f'Added "{clip.get("title", "Chapter clip")}" to the project',
+                "result": {"status": result.get("status"), "clip_id": clip.get("id")}
+            })
+    except HTTPException as exc:
+        error = exc.detail if isinstance(exc.detail, str) else json.dumps(exc.detail, ensure_ascii=False)
+        with EDITOR_RENDER_JOBS_LOCK:
+            EDITOR_RENDER_JOBS[job_id].update({
+                "status": "failed",
+                "stage": "Chapter extraction failed",
+                "detail": error,
+                "error": error
+            })
+    except Exception as exc:
+        print(f"[Chapter Extract Job {job_id}] {type(exc).__name__}: {exc}")
+        with EDITOR_RENDER_JOBS_LOCK:
+            EDITOR_RENDER_JOBS[job_id].update({
+                "status": "failed",
+                "stage": "Chapter extraction failed",
+                "detail": str(exc) or type(exc).__name__,
+                "error": f"{type(exc).__name__}: {exc}"
+            })
+
+
+def _public_editor_render_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    result = job.get("result")
+    return {
+        "job_id": job["job_id"],
+        "project_id": job["project_id"],
+        "kind": job.get("kind", "timeline_render"),
+        "status": job["status"],
+        "progress": job["progress"],
+        "stage": job["stage"],
+        "detail": job.get("detail", ""),
+        "error": job.get("error"),
+        "result": result
+    }
 
 class YouTubeInfoRequest(BaseModel):
     url: str
@@ -1666,6 +1776,51 @@ async def save_editor_state(project_id: str, payload: Dict[str, Any] = Body(...)
     return {"status": "success", "saved_at": time.time(), "project": HistoryManager.get_project_by_id(project_id)}
 
 
+@app.post("/api/projects/{project_id}/apply-timeline-edits/start", status_code=202)
+async def start_timeline_edit_job(project_id: str, payload: Dict[str, Any] = Body(...)):
+    if not HistoryManager.get_project_by_id(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    with EDITOR_RENDER_JOBS_LOCK:
+        if any(
+            job["project_id"] == project_id and job["status"] in ("queued", "running")
+            for job in EDITOR_RENDER_JOBS.values()
+        ):
+            raise HTTPException(status_code=409, detail="A render is already running for this project")
+
+        job_id = str(uuid.uuid4())
+        job = {
+            "job_id": job_id,
+            "project_id": project_id,
+            "kind": "timeline_render",
+            "status": "queued",
+            "progress": 0,
+            "stage": "Queued",
+            "detail": "Waiting for the render worker",
+            "created_at": time.time()
+        }
+        EDITOR_RENDER_JOBS[job_id] = job
+
+    job_payload = dict(payload)
+    job_payload["_progress_job_id"] = job_id
+    threading.Thread(
+        target=_run_editor_render_job,
+        args=(job_id, project_id, job_payload),
+        daemon=True
+    ).start()
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/api/render-jobs/{job_id}")
+@app.get("/api/editor-render-jobs/{job_id}")
+async def get_editor_render_job(job_id: str):
+    with EDITOR_RENDER_JOBS_LOCK:
+        job = EDITOR_RENDER_JOBS.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Render job not found")
+        return _public_editor_render_job(job)
+
+
 @app.post("/api/projects/{project_id}/apply-timeline-edits")
 async def apply_timeline_edits(project_id: str, payload: Dict[str, Any] = Body(...)):
     """
@@ -1676,6 +1831,8 @@ async def apply_timeline_edits(project_id: str, payload: Dict[str, Any] = Body(.
     proj = HistoryManager.get_project_by_id(project_id)
     if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
+    progress_job_id = payload.get("_progress_job_id")
+    _set_editor_render_progress(progress_job_id, 5, "Preparing source", "Validating the original video and edited clips")
 
     source_video = proj.get("source_video")
     if not source_video or not Path(source_video).is_file():
@@ -1724,8 +1881,16 @@ async def apply_timeline_edits(project_id: str, payload: Dict[str, Any] = Body(.
     segments = proj.get("transcript_segments", [])
 
     rendered_clips = []
+    total_clips = len(raw_clips)
 
     for idx, c_in in enumerate(raw_clips):
+        progress_base = 8 + (idx / total_clips) * 82
+        progress_span = 82 / total_clips
+        clip_label = f"Clip {idx + 1} of {total_clips}"
+        _set_editor_render_progress(
+            progress_job_id, progress_base, "Analyzing framing",
+            f"{clip_label}: preparing safe framing and crop settings"
+        )
         start_sec = max(0.0, float(c_in.get("start", c_in.get("start_sec", 0.0))))
         end_sec = float(c_in.get("end", c_in.get("end_sec", start_sec + 30.0)))
         if end_sec <= start_sec:
@@ -1794,6 +1959,10 @@ async def apply_timeline_edits(project_id: str, payload: Dict[str, Any] = Body(.
             canvas_top_space=canvas_top_space
         )
 
+        _set_editor_render_progress(
+            progress_job_id, progress_base + progress_span * 0.12, "Preparing subtitles",
+            f"{clip_label}: aligning caption timing and visual style"
+        )
         ass_path = TEMP_DIR / f"timeline_{project_id[:8]}_{idx}_{int(time.time())}.ass"
         SubtitleGenerator.create_ass_file(
             words=words,
@@ -1820,6 +1989,19 @@ async def apply_timeline_edits(project_id: str, payload: Dict[str, Any] = Body(.
         folder_video_path = clip_dir / out_filename
         flat_video_path = OUTPUTS_DIR / out_filename
 
+        _set_editor_render_progress(
+            progress_job_id, progress_base + progress_span * 0.24, "Rendering video",
+            f"{clip_label}: FFmpeg is encoding video and audio; this stage may take a few minutes"
+        )
+        def on_render_progress(percent: float):
+            overall_progress = progress_base + progress_span * (0.24 + 0.46 * percent / 100.0)
+            _set_editor_render_progress(
+                progress_job_id,
+                overall_progress,
+                "Rendering video",
+                f"{clip_label}: video and audio encoding is {round(percent)}% complete"
+            )
+
         rendered_path = renderer.render_clip(
             video_path=source_video,
             start_sec=start_sec,
@@ -1829,7 +2011,8 @@ async def apply_timeline_edits(project_id: str, payload: Dict[str, Any] = Body(.
             output_filename=out_filename,
             color_preset=color_preset,
             watermark_text=watermark_text,
-            enable_voice_clarifier=voice_clarifier
+            enable_voice_clarifier=voice_clarifier,
+            progress_cb=on_render_progress if progress_job_id else None
         )
         if rendered_path.exists() and folder_video_path.resolve() != rendered_path.resolve():
             try:
@@ -1837,6 +2020,10 @@ async def apply_timeline_edits(project_id: str, payload: Dict[str, Any] = Body(.
             except Exception as cpy_err:
                 print(f"[Folder Video Warning] {cpy_err}")
 
+        _set_editor_render_progress(
+            progress_job_id, progress_base + progress_span * 0.70, "Generating thumbnails",
+            f"{clip_label}: creating cover images"
+        )
         # 3 Distinct High-Converting TikTok Thumbnails (Editorial, Red Alert, Authority Blueprint)
         thumb_configs = [
             ("thumb_1", "curiosity", "editorial_premium", "#FFE600", "Curiosity Editorial"),
@@ -1878,6 +2065,10 @@ async def apply_timeline_edits(project_id: str, payload: Dict[str, Any] = Body(.
 
         default_cover = generated_covers[0] if generated_covers else f"{safe_topic_name}.jpg"
 
+        _set_editor_render_progress(
+            progress_job_id, progress_base + progress_span * 0.90, "Preparing clip details",
+            f"{clip_label}: generating social copy and project documents"
+        )
         # Generate Social Media Kit & Docs
         part_info = f"Part {idx + 1}"
         social_kit = detector.generate_social_kit(
@@ -1938,6 +2129,10 @@ async def apply_timeline_edits(project_id: str, payload: Dict[str, Any] = Body(.
             "social_kit": social_kit,
             "words": words
         })
+        _set_editor_render_progress(
+            progress_job_id, progress_base + progress_span * 0.98, "Finishing clip",
+            f"{clip_label}: saving generated files"
+        )
 
     # Save to database
     if payload.get("editor_project") or payload.get("project"):
@@ -1946,6 +2141,7 @@ async def apply_timeline_edits(project_id: str, payload: Dict[str, Any] = Body(.
             HistoryManager.save_editor_project(project_id, submitted_project, submitted_project.get("title"))
     HistoryManager.replace_project_clips(project_id, rendered_clips)
     updated_project = HistoryManager.get_project_by_id(project_id)
+    _set_editor_render_progress(progress_job_id, 98, "Saving project", "Updating the project library")
     return {"status": "success", "project": updated_project, "clips": rendered_clips}
 
 @app.delete("/api/clips/{clip_id}")
@@ -2387,6 +2583,62 @@ async def get_podcast_summary(payload: Dict[str, Any] = Body(...)):
     raise HTTPException(status_code=400, detail="Missing project_id or transcript segments")
 
 
+@app.post("/api/clips/custom-extract/start", status_code=202)
+async def start_custom_extract_job(payload: Dict[str, Any] = Body(...)):
+    project_id = payload.get("project_id")
+    if not isinstance(project_id, str) or not project_id:
+        raise HTTPException(status_code=400, detail="project_id is required")
+
+    project = HistoryManager.get_project_by_id(project_id)
+    if not project or not _resolve_video_source(project_id):
+        raise HTTPException(status_code=404, detail="Source video not found for this project.")
+
+    try:
+        start_sec = float(payload.get("start_sec", 0.0))
+        end_sec = float(payload.get("end_sec", start_sec + 30.0))
+        project_duration = float(project.get("duration") or 0.0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Chapter start and end must be valid numbers")
+    if not math.isfinite(start_sec) or not math.isfinite(end_sec):
+        raise HTTPException(status_code=400, detail="Chapter start and end must be finite numbers")
+    if start_sec < 0 or end_sec <= start_sec or (project_duration and start_sec >= project_duration):
+        raise HTTPException(status_code=400, detail="Chapter time range is outside the source video")
+    if project_duration:
+        end_sec = min(end_sec, project_duration)
+    if end_sec <= start_sec:
+        raise HTTPException(status_code=400, detail="Chapter time range is outside the source video")
+
+    with EDITOR_RENDER_JOBS_LOCK:
+        if any(
+            job["project_id"] == project_id and job["status"] in ("queued", "running")
+            for job in EDITOR_RENDER_JOBS.values()
+        ):
+            raise HTTPException(status_code=409, detail="Another render is already running for this project")
+
+        job_id = str(uuid.uuid4())
+        EDITOR_RENDER_JOBS[job_id] = {
+            "job_id": job_id,
+            "project_id": project_id,
+            "kind": "chapter_extraction",
+            "status": "queued",
+            "progress": 0,
+            "stage": "Queued",
+            "detail": "Waiting to extract this topic chapter",
+            "created_at": time.time()
+        }
+
+    job_payload = dict(payload)
+    job_payload["start_sec"] = start_sec
+    job_payload["end_sec"] = end_sec
+    job_payload["_progress_job_id"] = job_id
+    threading.Thread(
+        target=_run_custom_extract_job,
+        args=(job_id, job_payload),
+        daemon=True
+    ).start()
+    return {"job_id": job_id, "status": "queued"}
+
+
 @app.post("/api/clips/custom-extract")
 async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
     """
@@ -2394,6 +2646,7 @@ async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
     Automatically formats subtitles, facial tracking, and BGM ducking!
     """
     project_id = payload.get("project_id")
+    progress_job_id = payload.get("_progress_job_id")
     start_sec = float(payload.get("start_sec", 0.0))
     end_sec = float(payload.get("end_sec", start_sec + 30.0))
     custom_title = payload.get("title", "CUSTOM HIGHLIGHT")
@@ -2411,9 +2664,13 @@ async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
     resolved_source = _resolve_video_source(project_id)
     if not proj or not resolved_source:
         raise HTTPException(status_code=404, detail="Source video not found for this project.")
+    _set_editor_render_progress(
+        progress_job_id, 5, "Preparing chapter",
+        "Finding transcript text and checking the selected chapter range"
+    )
 
     source_video = str(resolved_source)
-    clip_id = f"{project_id}_custom_{int(start_sec)}_{int(time.time())}"
+    clip_id = f"{project_id}_custom_{uuid.uuid4().hex[:12]}"
 
     segments = proj.get("transcript_segments", [])
     matching_text = []
@@ -2434,6 +2691,10 @@ async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
         duration = max(3.0, end_sec - start_sec)
 
     full_text = " ".join(matching_text) or custom_title
+    _set_editor_render_progress(
+        progress_job_id, 12, "Transcribing chapter captions",
+        "Extracting word-level caption timings from the selected audio"
+    )
     pipeline = ClipForgePipeline()
     custom_words = pipeline.transcriber.transcribe_segment(source_video, start_sec, duration)
     if not custom_words:
@@ -2447,7 +2708,15 @@ async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
             }
             for i, word in enumerate(approx_words)
         ]
+    chapter_hook = (
+        str(custom_words[0].get("word") or "").strip()
+        if custom_words else custom_title
+    ) or custom_title
 
+    _set_editor_render_progress(
+        progress_job_id, 30, "Analyzing framing",
+        "Preparing vertical framing for the chapter clip"
+    )
     top_padding = float(payload.get("top_padding", payload.get("pad_top", 0.0)))
     bottom_padding = float(payload.get("bottom_padding", payload.get("pad_bottom", 0.0)))
     top_pct = max(0.0, min(45.0, float(top_padding))) / 100.0
@@ -2481,6 +2750,10 @@ async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
     )
 
     # Generate .ass subtitles
+    _set_editor_render_progress(
+        progress_job_id, 38, "Preparing subtitles",
+        "Applying the selected caption style and topic headline"
+    )
     ass_path = TEMP_DIR / f"custom_{clip_id}.ass"
     SubtitleGenerator.create_ass_file(
         words=custom_words,
@@ -2501,7 +2774,20 @@ async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
 
     # Fast GPU Render
     renderer = VideoRenderer()
-    out_filename = f"custom_{project_id[:8]}_{int(start_sec)}_{int(time.time())}.mp4"
+    out_filename = f"custom_{project_id[:8]}_{int(start_sec)}_{clip_id[-8:]}.mp4"
+    _set_editor_render_progress(
+        progress_job_id, 48, "Rendering chapter",
+        "FFmpeg is encoding the vertical video and audio"
+    )
+
+    def on_render_progress(percent: float):
+        _set_editor_render_progress(
+            progress_job_id,
+            48 + 0.40 * percent,
+            "Rendering chapter",
+            f"Video and audio encoding is {round(percent)}% complete"
+        )
+
     rendered_path = renderer.render_clip(
         video_path=source_video,
         start_sec=start_sec,
@@ -2511,10 +2797,15 @@ async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
         output_filename=out_filename,
         progress_bar_color=progress_bar_color,
         bgm_track=bgm_track,
-        bgm_volume=bgm_volume
+        bgm_volume=bgm_volume,
+        progress_cb=on_render_progress if progress_job_id else None
     )
 
     # Generate matching AI TikTok cover thumbnail
+    _set_editor_render_progress(
+        progress_job_id, 90, "Creating chapter cover",
+        "Designing a matching thumbnail and social caption"
+    )
     thumb_path = OUTPUTS_DIR / f"{Path(out_filename).stem}.jpg"
     try:
         TikTokThumbnailDesigner.create_tiktok_thumbnail(
@@ -2522,7 +2813,7 @@ async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
             output_jpg_path=str(thumb_path),
             topic=custom_title,
             title=custom_title,
-            hook=approx_words[0] if approx_words else custom_title,
+            hook=chapter_hook,
             transcript=full_text,
             crop_filter=crop_filter,
             source_clean_video=source_video,
@@ -2535,7 +2826,7 @@ async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
     detector = ViralDetector()
     social_kit = detector.generate_social_kit(
         title=custom_title,
-        hook=approx_words[0] if approx_words else custom_title,
+        hook=chapter_hook,
         transcript=full_text
     )
 
@@ -2545,7 +2836,7 @@ async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
         "filename": out_filename,
         "cover": f"{Path(out_filename).stem}.jpg",
         "title": custom_title,
-        "hook": approx_words[0] if approx_words else "High impact topic",
+        "hook": chapter_hook,
         "virality_score": 93,
         "narrative_breakdown": {"hook_score": 93, "story_score": 92, "conclusion_score": 94},
         "duration": round(duration, 2),
@@ -2562,7 +2853,12 @@ async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
     }
 
     # Save into DB
+    _set_editor_render_progress(
+        progress_job_id, 97, "Adding clip to project",
+        "Saving the rendered clip to this project's library"
+    )
     HistoryManager.add_single_clip(new_clip)
+    _set_editor_render_progress(progress_job_id, 99, "Refreshing project", "Chapter clip saved")
 
     return {"status": "success", "clip": new_clip}
 
@@ -2692,7 +2988,16 @@ async def set_active_clip_cover(clip_id: str, payload: Dict[str, Any] = Body(...
 
 
 if __name__ == "__main__":
+    import socket
+    import sys
     import uvicorn
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_check:
+        server_check.settimeout(0.25)
+        if server_check.connect_ex(("127.0.0.1", 8000)) == 0:
+            print("ClipForge is already running at http://127.0.0.1:8000; not starting a duplicate server.")
+            sys.exit(0)
+
     print("\n" + "=" * 60)
     print("  ClipForge AI Studio is starting up!")
     print("  Open your browser at: http://localhost:8000")

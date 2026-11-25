@@ -2239,12 +2239,47 @@ dialog#clipdlg::backdrop {
   background: var(--muted);
   border: 1px solid var(--line);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
+.chapter-info { min-width: 0; flex: 1 1 150px; }
 .chapter-info b { display: block; font-size: 13px; color: var(--brand-ink); }
 .chapter-info span { font-size: 11.5px; color: var(--faint); }
+.chapter-extract-status {
+  display: grid;
+  flex: 1 1 100%;
+  gap: 5px;
+  color: var(--brand-ink);
+}
+.chapter-extract-status[hidden] { display: none; }
+.chapter-extract-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+}
+.chapter-extract-percent { color: var(--brand-deep); }
+.chapter-extract-track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(30, 22, 18, 0.12);
+}
+.chapter-extract-fill {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--brand);
+  transition: width 0.35s ease;
+}
+.chapter-extract-detail {
+  color: var(--dim);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
 
 .heatmap-canvas-container {
   position: relative;
@@ -4937,6 +4972,24 @@ dialog#clipdlg::backdrop {
   letter-spacing: 0.05em;
   line-height: 1.25;
 }
+.cc-sub-badge.mrbeast {
+  color: #FFE600;
+  font-size: 19px;
+}
+.cc-sub-badge.cyber {
+  color: #00F2FE;
+  text-shadow: -2px -2px 0 #111, 2px -2px 0 #111, -2px 2px 0 #111, 2px 2px 0 #111, 0 0 12px rgba(0,242,254,.8);
+}
+.cc-sub-badge.clean {
+  color: #FFF;
+  font-family: Inter, sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0;
+  background: rgba(0,0,0,.62);
+  border-radius: 5px;
+  padding: 4px 8px;
+}
 
 /* TikTok Mock Guide Overlay */
 .cc-tiktok-guides {
@@ -5020,6 +5073,18 @@ dialog#clipdlg::backdrop {
   flex-shrink: 0;
   position: relative;
 }
+.cc-tl-toolbar {
+  min-height: 38px;
+  gap: 7px;
+  justify-content: flex-start;
+  overflow-x: auto;
+}
+.cc-zoom-readout {
+  min-width: 52px;
+  color: #00e5ff;
+  font: 11px/1 monospace;
+  text-align: center;
+}
 
 /* Timeline Control Toolbar */
 .cc-tl-toolbar {
@@ -5091,7 +5156,7 @@ dialog#clipdlg::backdrop {
 }
 .cc-ruler-track {
   height: 26px;
-  background: #181A22;
+  background: linear-gradient(180deg, #20232b, #181a22);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   position: relative;
   font-family: monospace;
@@ -5251,8 +5316,100 @@ dialog#clipdlg::backdrop {
   border-radius: 50%;
   animation: cc-spin 0.75s linear infinite;
 }
+.cc-render-stage {
+  margin: 0;
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  text-align: center;
+}
+.cc-render-detail {
+  max-width: min(620px, 84vw);
+  margin: -8px 0 0;
+  color: #b7bdc8;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+.cc-render-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(520px, 82vw);
+  color: #00f2fe;
+  font-size: 13px;
+}
+.cc-render-progress-track {
+  height: 10px;
+  flex: 1;
+  overflow: hidden;
+  border: 1px solid rgba(0, 242, 254, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+.cc-render-progress-fill {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #00a9c7, #00f2fe);
+  transition: width 0.35s ease;
+}
+.cc-render-footnote {
+  max-width: min(620px, 84vw);
+  color: #7e8795;
+  font-size: 11px;
+  text-align: center;
+}
 @keyframes cc-spin {
   to { transform: rotate(360deg); }
+}
+
+@media (max-height: 600px) {
+  .cc-timeline-section {
+    height: clamp(150px, 38vh, 240px);
+    flex: 0 1 clamp(150px, 38vh, 240px);
+  }
+  .cc-nav-dock {
+    overflow-y: auto;
+  }
+  .cc-main-workspace {
+    min-height: 72px;
+  }
+}
+
+@media (max-width: 760px) {
+  .cc-topbar {
+    flex-wrap: wrap;
+    padding: 6px 8px;
+    gap: 6px;
+  }
+  .cc-topbar-left,
+  .cc-topbar-tools,
+  .cc-topbar-right {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    min-width: 0;
+  }
+  .cc-project-title-input {
+    flex: 1;
+    max-width: none;
+    min-width: 0;
+    font-size: 12px;
+  }
+  .cc-sub-inspector {
+    width: min(240px, 42vw);
+    padding: 10px;
+  }
+  .cc-nav-dock {
+    width: 52px;
+  }
+  .cc-dock-btn {
+    width: 42px;
+  }
+  .cc-tl-toolbar {
+    justify-content: flex-start;
+    padding: 6px 8px;
+  }
 }
 
 
@@ -5718,8 +5875,24 @@ dialog#clipdlg::backdrop {
   color: #727988;
   font-size: 9.5px;
 }
+.cc-ruler-tick.major {
+  color: #c4c9d4;
+}
+.cc-ruler-tick.major::before {
+  height: 13px;
+  background: rgba(205, 214, 230, .55);
+}
+.cc-ruler-tick.minor::before {
+  height: 4px;
+  background: rgba(205, 214, 230, .22);
+}
 .cc-ruler-tick span {
-  margin-top: 2px;
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  margin: 0;
+  white-space: nowrap;
+  font: 10px/1.2 monospace;
 }
 .cc-ruler-tick::before {
   content: "";

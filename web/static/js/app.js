@@ -85,8 +85,19 @@ async function api(path, opt = {}) {
   const r = await fetch(path, opt);
   if (!r.ok) {
     let d = r.statusText;
-    try { d = (await r.json()).detail || d; } catch {}
-    throw new Error(typeof d === "string" ? d : "Something went wrong");
+    try {
+      const body = await r.json();
+      d = body.detail || body.message || d;
+      if (Array.isArray(d)) {
+        d = d.map(item => {
+          const loc = Array.isArray(item.loc) ? item.loc.slice(1).join(".") : "";
+          return `${loc ? `${loc}: ` : ""}${item.msg || "Invalid request"}`;
+        }).join("; ");
+      } else if (typeof d !== "string") {
+        d = JSON.stringify(d);
+      }
+    } catch {}
+    throw new Error(d || `Request failed (${r.status})`);
   }
   return r.json();
 }
@@ -1032,6 +1043,23 @@ function pipelineTrackerHtml(j, pct) {
   `;
 }
 
+function updateChapterExtractProgress(card, job) {
+  if (!card) return;
+  const progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
+  const status = card.querySelector(".chapter-extract-status");
+  const stage = card.querySelector(".chapter-extract-stage");
+  const percent = card.querySelector(".chapter-extract-percent");
+  const detail = card.querySelector(".chapter-extract-detail");
+  const fill = card.querySelector(".chapter-extract-fill");
+  const track = card.querySelector(".chapter-extract-track");
+  if (status) status.hidden = false;
+  if (stage) stage.textContent = job.stage || "Extracting chapter";
+  if (percent) percent.textContent = `${Math.round(progress)}%`;
+  if (detail) detail.textContent = job.detail || "Working on your chapter clip";
+  if (fill) fill.style.width = `${progress}%`;
+  if (track) track.setAttribute("aria-valuenow", String(Math.round(progress)));
+}
+
 function briefHtml(j) {
   const s = j.podcast_summary || {};
   const chapters = s.chapters || [];
@@ -1063,6 +1091,16 @@ function briefHtml(j) {
                   <span>${fmt(ch.start)} - ${fmt(ch.end)}</span>
                 </div>
                 <button class="btn sm primary" data-act="cliptopic" data-j="${j.id}" data-start="${ch.start}" data-end="${ch.end}" data-title="${esc(ch.title)}">${ic("scissors")}Clip</button>
+                <div class="chapter-extract-status" hidden aria-live="polite">
+                  <div class="chapter-extract-heading">
+                    <span class="chapter-extract-stage">Queued</span>
+                    <strong class="chapter-extract-percent">0%</strong>
+                  </div>
+                  <div class="chapter-extract-track" role="progressbar" aria-label="Chapter extraction progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                    <div class="chapter-extract-fill"></div>
+                  </div>
+                  <small class="chapter-extract-detail">Waiting to extract this topic chapter</small>
+                </div>
               </div>`).join("")}
           </div>
         </div>` : ""}
@@ -2027,6 +2065,18 @@ function fmtTimecode(sec) {
   return `${m}:${padSec}`;
 }
 
+function fmtFrameTimecode(frames) {
+  const frameCount = Math.max(0, Math.round(Number(frames) || 0));
+  const nominalFps = Math.max(1, Math.round(TL_STATE.fps));
+  const totalSeconds = Math.floor(frameCount / TL_STATE.fps);
+  const frame = frameCount - Math.round(totalSeconds * TL_STATE.fps);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}:${pad(frame % nominalFps)}`;
+}
+
 function secToFrames(sec, fps = TL_STATE.fps) {
   return Math.max(0, Math.round((Number(sec) || 0) * fps));
 }
@@ -2053,6 +2103,7 @@ function buildEditorProject() {
 }
 
 function ccMarkDirty() {
+  TL_STATE._changeSeq = (TL_STATE._changeSeq || 0) + 1;
   TL_STATE.isDirty = true;
   TL_STATE.saveStatus = "Unsaved changes";
   const status = document.getElementById("ccSaveStatus");
@@ -2061,27 +2112,48 @@ function ccMarkDirty() {
   TL_STATE._autosaveTimer = setTimeout(ccSaveEditorProject, 1200);
 }
 
-async function ccSaveEditorProject(manual = false) {
-  if (!TL_STATE.projectId) return;
+async function ccSaveEditorProject(manual = false, force = false) {
+  if (!TL_STATE.projectId) return false;
+  if (!TL_STATE.isDirty && !manual && !force) return true;
+  if (TL_STATE._savePromise) {
+    const previousSaveSucceeded = await TL_STATE._savePromise;
+    if (previousSaveSucceeded && TL_STATE.isDirty) return ccSaveEditorProject(manual, true);
+    return previousSaveSucceeded;
+  }
+
   TL_STATE.saveStatus = "Saving...";
   const status = document.getElementById("ccSaveStatus");
   if (status) status.textContent = TL_STATE.saveStatus;
-  try {
-    const project = buildEditorProject();
-    const res = await api(`/api/projects/${TL_STATE.projectId}/editor-state`, {
-      method: "POST",
-      body: JSON.stringify({ editor_project: project, title: project.title })
-    });
-    if (!res || res.status !== "success") throw new Error("Save failed");
-    TL_STATE.isDirty = false;
-    TL_STATE.saveStatus = "Saved";
-    if (status) status.textContent = TL_STATE.saveStatus;
-    if (manual) toast("Project saved", "ok");
-  } catch (err) {
-    TL_STATE.saveStatus = "Save failed";
-    if (status) status.textContent = TL_STATE.saveStatus;
-    if (manual) toast(err.message || "Failed to save project", "bad");
-  }
+  const savedRevision = TL_STATE._changeSeq || 0;
+  const savePromise = (async () => {
+    try {
+      const project = buildEditorProject();
+      const res = await send(`/api/projects/${TL_STATE.projectId}/editor-state`, {
+        editor_project: project,
+        title: project.title
+      });
+      if (!res || res.status !== "success") throw new Error("Save failed");
+      if ((TL_STATE._changeSeq || 0) === savedRevision) {
+        TL_STATE.isDirty = false;
+        TL_STATE.saveStatus = "Saved";
+      } else {
+        TL_STATE.saveStatus = "Saving latest changes...";
+      }
+      if (status) status.textContent = TL_STATE.saveStatus;
+      return true;
+    } catch (err) {
+      TL_STATE.saveStatus = "Save failed";
+      if (status) status.textContent = TL_STATE.saveStatus;
+      toast(`Couldn't save your edits: ${err.message || err}`, "bad");
+      return false;
+    }
+  })();
+  TL_STATE._savePromise = savePromise;
+  const saved = await savePromise;
+  TL_STATE._savePromise = null;
+  if (saved && TL_STATE.isDirty) return ccSaveEditorProject(manual, true);
+  if (saved && manual) toast("Project saved", "ok");
+  return saved;
 }
 
 function ccSaveUndo() {
@@ -2089,6 +2161,92 @@ function ccSaveUndo() {
   if (TL_STATE._undoStack.length > 100) TL_STATE._undoStack.shift();
   TL_STATE._redoStack = [];
   ccMarkDirty();
+}
+
+function ccSetZoom(zoom, anchorTime) {
+  const viewport = document.getElementById("ccTracksViewport");
+  const previousZoom = TL_STATE.zoom;
+  TL_STATE.zoom = Math.max(0.001, Math.min(50, Number(zoom) || previousZoom));
+
+  const slider = document.getElementById("ccZoomSlider");
+  if (slider) slider.value = String(ccZoomToSlider(TL_STATE.zoom));
+  const readout = document.getElementById("ccZoomReadout");
+  if (readout) readout.textContent = `${TL_STATE.zoom.toFixed(2)}×`;
+  ccRefreshTracks();
+
+  if (viewport && Number.isFinite(anchorTime)) {
+    const anchorX = anchorTime * 60 * previousZoom;
+    const newAnchorX = anchorTime * 60 * TL_STATE.zoom;
+    viewport.scrollLeft = Math.max(0, newAnchorX - (anchorX - viewport.scrollLeft));
+  }
+}
+
+function ccZoomToSlider(zoom) {
+  const min = 0.001;
+  const max = 50;
+  return Math.round(Math.log(Math.max(min, Math.min(max, zoom)) / min) / Math.log(max / min) * 1000);
+}
+
+function ccSliderToZoom(value) {
+  const min = 0.001;
+  const max = 50;
+  return min * Math.pow(max / min, Math.max(0, Math.min(1000, Number(value))) / 1000);
+}
+
+function ccZoomToFit() {
+  const viewport = document.getElementById("ccTracksViewport");
+  if (!viewport) return;
+  const availableWidth = Math.max(160, viewport.clientWidth - 48);
+  ccSetZoom(availableWidth / Math.max(1, TL_STATE.duration) / 60);
+  viewport.scrollLeft = 0;
+}
+
+function ccZoomToSelection() {
+  const viewport = document.getElementById("ccTracksViewport");
+  const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+  if (!viewport || !clip) return;
+  const availableWidth = Math.max(160, viewport.clientWidth - 48);
+  const selectedDuration = Math.max(1 / TL_STATE.fps, clip.end - clip.start);
+  ccSetZoom(availableWidth / selectedDuration / 60, clip.start);
+}
+
+function ccUpdatePreviewOverlays() {
+  const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+  const video = document.getElementById("ccVideo");
+  const banner = document.getElementById("ccBannerOverlay");
+  const subtitle = document.getElementById("ccSubtitleOverlay");
+  if (!clip || !video || !banner || !subtitle) return;
+
+  banner.textContent = clip.hook || "";
+  banner.style.display = clip.hook ? "" : "none";
+  banner.className = `cc-overlay-banner ${clip.hook_style || "yellow"}`;
+  if (clip.hook_bold === false) banner.style.fontWeight = "500";
+  else banner.style.fontWeight = "900";
+
+  const currentTime = video.currentTime || clip.start;
+  const word = (clip.words || []).find(item =>
+    Number(item.start) <= currentTime && Number(item.end) >= currentTime
+  );
+  const segment = (TL_STATE.project?.transcript_segments || []).find(item =>
+    Number(item.start) <= currentTime && Number(item.end) >= currentTime
+  );
+  let caption = word?.word || segment?.text || clip.full_transcript || "CAPTION PREVIEW";
+  if (clip.word_case === "upper") caption = caption.toUpperCase();
+  else if (clip.word_case === "lower") caption = caption.toLowerCase();
+  else if (clip.word_case === "title") caption = caption.replace(/\b\w/g, char => char.toUpperCase());
+
+  subtitle.innerHTML = `<span class="cc-sub-badge ${esc(clip.subtitle_style || "hormozi")}">${esc(caption)}</span>`;
+}
+
+function ccSyncPreviewToClip(resetToStart = false) {
+  const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+  const video = document.getElementById("ccVideo");
+  if (!clip || !video) return;
+  const lastValidFrame = Math.max(clip.start, clip.end - 1 / TL_STATE.fps);
+  video.currentTime = resetToStart
+    ? clip.start
+    : Math.max(clip.start, Math.min(lastValidFrame, video.currentTime || clip.start));
+  ccUpdatePreviewOverlays();
 }
 
 async function openTimelineEditor(projectId) {
@@ -2144,6 +2302,9 @@ async function openTimelineEditor(projectId) {
         top_padding: Number(c.top_padding || 0),
         bottom_padding: Number(c.bottom_padding || 0),
         canvas_top_space: Number(c.canvas_top_space || 450),
+        word_case: c.word_case || "upper",
+        words: Array.isArray(c.words) ? c.words : [],
+        full_transcript: c.full_transcript || "",
         virality_score: Number(c.virality_score || 92)
       }));
     } else {
@@ -2213,6 +2374,7 @@ function renderSubInspector(tab) {
 
   if (tab === "captions") {
     const ss = clip ? clip.subtitle_style : "hormozi";
+    const wordCase = clip ? (clip.word_case || "upper") : "upper";
     return `
     <div class="cc-insp-section">
       <div class="cc-insp-label">💬 Caption Style</div>
@@ -2225,9 +2387,9 @@ function renderSubInspector(tab) {
     <div class="cc-insp-section">
       <div class="cc-insp-label">🔤 Word Case</div>
       <select class="cc-select" data-field="word_case">
-        <option value="upper">UPPER CASE</option>
-        <option value="title">Title Case</option>
-        <option value="lower">lower case</option>
+        <option value="upper" ${wordCase==="upper"?"selected":""}>UPPER CASE</option>
+        <option value="title" ${wordCase==="title"?"selected":""}>Title Case</option>
+        <option value="lower" ${wordCase==="lower"?"selected":""}>lower case</option>
       </select>
     </div>
     <div class="cc-insp-section">
@@ -2340,12 +2502,22 @@ function buildTracksHtml() {
   const pxPerSec = 60 * zoom;
   const totalW = Math.max(800, dur * pxPerSec + 60);
 
-  // Ruler
-  const tickStep = zoom < 0.5 ? 60 : zoom < 1 ? 30 : zoom < 2 ? 15 : 10;
+  // Choose a readable major tick interval as the user zooms the timeline.
+  const tickChoices = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
+  const tickStep = tickChoices.find(step => step * pxPerSec >= 76 && dur / step <= 2500) || 3600;
+  const tickFrames = Math.max(1, secToFrames(tickStep));
+  const durationFrames = secToFrames(dur);
+  const pixelsPerFrame = pxPerSec / TL_STATE.fps;
+  const minorFrames = Math.max(
+    tickFrames >= 5 ? Math.floor(tickFrames / 5) : 1,
+    Math.ceil(8 / Math.max(0.001, pixelsPerFrame)),
+    Math.ceil(durationFrames / 4000)
+  );
   let rulerHtml = "";
-  for (let t = 0; t <= dur; t += tickStep) {
-    const x = t * pxPerSec;
-    rulerHtml += `<div class="cc-ruler-tick" style="left:${x}px"><span>${fmtTimecode(t)}</span></div>`;
+  for (let frame = 0, count = 0; frame <= durationFrames && count < 5000; frame += minorFrames, count++) {
+    const isMajor = frame % tickFrames === 0;
+    const x = framesToSec(frame) * pxPerSec;
+    rulerHtml += `<div class="cc-ruler-tick ${isMajor ? "major" : "minor"}" style="left:${x}px">${isMajor ? `<span>${fmtFrameTimecode(frame)}</span>` : ""}</div>`;
   }
 
   // Video clips
@@ -2501,8 +2673,11 @@ function renderCapCutStudio() {
       <!-- Timeline Toolbar -->
       <div class="cc-tl-toolbar">
         <button class="cc-tl-tool-btn" data-act="cc_zoom" data-delta="-0.25" title="Zoom out">🔍−</button>
-        <input type="range" id="ccZoomSlider" min="0.2" max="6" step="0.1" value="${TL_STATE.zoom}" style="width:80px;accent-color:#00e5ff">
+        <input type="range" id="ccZoomSlider" min="0" max="1000" step="1" value="${ccZoomToSlider(TL_STATE.zoom)}" aria-label="Timeline zoom" title="Timeline zoom" style="width:140px;accent-color:#00e5ff">
         <button class="cc-tl-tool-btn" data-act="cc_zoom" data-delta="0.25" title="Zoom in">🔍+</button>
+        <span class="cc-zoom-readout" id="ccZoomReadout">${TL_STATE.zoom.toFixed(2)}×</span>
+        <button class="cc-tl-tool-btn" data-act="cc_zoom_fit" title="Fit entire timeline">Fit</button>
+        <button class="cc-tl-tool-btn" data-act="cc_zoom_selection" title="Zoom to selected clip">Selected</button>
         <div class="cc-tl-sep"></div>
         <button class="cc-tl-tool-btn" data-act="cc_add_clip" title="Add Clip">＋ Clip</button>
         <button class="cc-tl-tool-btn" data-act="cc_split" title="Split at playhead">✂️ Split</button>
@@ -2562,8 +2737,15 @@ function renderCapCutStudio() {
     <!-- Loading Overlay -->
     <div class="cc-loading-overlay" id="ccLoadingOverlay" style="display:none">
       <div class="cc-spinner"></div>
-      <div style="color:#fff;margin-top:16px;font-size:16px">Re-rendering clips with GPU…</div>
-      <div style="color:#888;font-size:12px;margin-top:4px">This may take a minute. Please wait.</div>
+      <h3 class="cc-render-stage" id="ccRenderStage">Starting render…</h3>
+      <p class="cc-render-detail" id="ccRenderDetail">Saving your edits and preparing the render job.</p>
+      <div class="cc-render-progress-row">
+        <div class="cc-render-progress-track" role="progressbar" aria-label="Render progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="cc-render-progress-fill" id="ccRenderProgressFill"></div>
+        </div>
+        <strong id="ccRenderProgressValue">0%</strong>
+      </div>
+      <div class="cc-render-footnote" id="ccRenderFootnote">You can keep this window open; the server is rendering in the background.</div>
     </div>
   </div>`;
 
@@ -2580,12 +2762,21 @@ function attachCapCutEvents() {
     vid.loop = TL_STATE.isLooping;
 
     vid.addEventListener("timeupdate", () => {
+      const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+      if (clip && vid.currentTime >= clip.end) {
+        if (TL_STATE.isLooping) vid.currentTime = clip.start;
+        else {
+          vid.pause();
+          vid.currentTime = Math.max(clip.start, clip.end - 1 / TL_STATE.fps);
+        }
+      }
       const t = vid.currentTime;
       const pxPerSec = 60 * TL_STATE.zoom;
       const ph = document.getElementById("ccPlayhead");
       if (ph) ph.style.left = (t * pxPerSec) + "px";
       const tc = document.getElementById("ccTimecodeDisplay");
       if (tc) tc.textContent = fmtTimecode(t);
+      ccUpdatePreviewOverlays();
     });
 
     vid.addEventListener("play", () => {
@@ -2599,16 +2790,18 @@ function attachCapCutEvents() {
       if (btn) btn.textContent = "▶";
     });
     vid.addEventListener("ended", () => {
-      if (!TL_STATE.isLooping) vid.currentTime = 0;
+      const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+      if (clip) vid.currentTime = clip.start;
+      else if (!TL_STATE.isLooping) vid.currentTime = 0;
     });
+    ccUpdatePreviewOverlays();
   }
 
   /* Zoom slider */
   const zoomSlider = document.getElementById("ccZoomSlider");
   if (zoomSlider) {
     zoomSlider.addEventListener("input", () => {
-      TL_STATE.zoom = parseFloat(zoomSlider.value);
-      ccRefreshTracks();
+      ccSetZoom(ccSliderToZoom(zoomSlider.value));
     });
   }
 
@@ -2623,8 +2816,20 @@ function attachCapCutEvents() {
       const pxPerSec = 60 * TL_STATE.zoom;
       const seekTime = Math.max(0, Math.min(TL_STATE.duration, relX / pxPerSec));
       const v = document.getElementById("ccVideo");
-      if (v) v.currentTime = seekTime;
+      if (v) {
+        const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+        v.currentTime = clip ? Math.max(clip.start, Math.min(clip.end, seekTime)) : seekTime;
+        ccUpdatePreviewOverlays();
+      }
     });
+    viewport.addEventListener("wheel", (e) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const rect = viewport.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left + viewport.scrollLeft;
+      const anchorTime = mouseX / (60 * TL_STATE.zoom);
+      ccSetZoom(TL_STATE.zoom * (e.deltaY < 0 ? 1.12 : 1 / 1.12), anchorTime);
+    }, { passive: false });
 
     /* Trim handle drag */
     viewport.addEventListener("pointerdown", (e) => {
@@ -2665,6 +2870,7 @@ function attachCapCutEvents() {
         } else {
           c.end = framesToSec(secToFrames(Math.max(t, c.start + 3)));
         }
+        ccSyncPreviewToClip();
         ccRefreshTracks();
       } else if (type === "move") {
         const c = TL_STATE.clips[idx];
@@ -2675,6 +2881,13 @@ function attachCapCutEvents() {
         c.start = newStart;
         c.end = newStart + duration;
         ccRefreshTracks();
+      } else if (type === "playhead") {
+        const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+        const video = document.getElementById("ccVideo");
+        if (video) {
+          video.currentTime = clip ? Math.max(clip.start, Math.min(clip.end, t)) : t;
+          ccUpdatePreviewOverlays();
+        }
       }
     });
 
@@ -2714,11 +2927,7 @@ function attachCapCutEvents() {
 
       /* Live banner update */
       if (field === "hook") {
-        const banner = document.getElementById("ccBannerOverlay");
-        if (banner) {
-          banner.style.display = val ? "" : "none";
-          banner.textContent = val;
-        }
+        ccUpdatePreviewOverlays();
       }
     });
 
@@ -2729,6 +2938,8 @@ function attachCapCutEvents() {
       if (!clip) return;
       const val = e.target.type === "checkbox" ? e.target.checked : e.target.value;
       clip[field] = val;
+      ccMarkDirty();
+      ccUpdatePreviewOverlays();
       /* Refresh style chips */
       if (field === "subtitle_style" || field === "hook_style") {
         ccRefreshInspector();
@@ -2787,34 +2998,8 @@ function ccRefreshTracks() {
 
 function ccRefreshInspector() {
   const insp = document.getElementById("ccInspector");
-  if (insp) {
-    insp.innerHTML = renderSubInspector(TL_STATE.activeTab);
-    /* Re-attach inspector events by calling attachCapCutEvents which is idempotent for inspector */
-    const inspector = document.getElementById("ccInspector");
-    if (inspector) {
-      inspector.addEventListener("input", (e) => {
-        const field = e.target.dataset.field;
-        if (!field) return;
-        const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
-        if (!clip) return;
-        const val = e.target.type === "checkbox" ? e.target.checked : (e.target.type === "range" ? parseFloat(e.target.value) : e.target.value);
-        clip[field] = val;
-        if (field === "top_padding") { const el = document.getElementById("ccTopPadNum"); if (el) el.textContent = val; }
-        if (field === "bottom_padding") { const el = document.getElementById("ccBotPadNum"); if (el) el.textContent = val; }
-        if (field === "canvas_top_space") { const el = document.getElementById("ccCtsNum"); if (el) el.textContent = val; }
-        if (field === "hook") { const b = document.getElementById("ccBannerOverlay"); if (b) { b.style.display = val ? "" : "none"; b.textContent = val; } }
-      });
-      inspector.addEventListener("change", (e) => {
-        const field = e.target.dataset.field;
-        if (!field) return;
-        const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
-        if (!clip) return;
-        clip[field] = e.target.type === "checkbox" ? e.target.checked : e.target.value;
-        ccMarkDirty();
-        if (field === "subtitle_style" || field === "hook_style") ccRefreshInspector();
-      });
-    }
-  }
+  if (insp) insp.innerHTML = renderSubInspector(TL_STATE.activeTab);
+  ccUpdatePreviewOverlays();
 }
 
 function ccSelectClip(idx) {
@@ -2829,6 +3014,7 @@ function ccSelectClip(idx) {
     banner.style.display = clip.hook ? "" : "none";
     banner.textContent = clip.hook || "";
   }
+  ccUpdatePreviewOverlays();
   ccRefreshTracks();
   ccRefreshInspector();
 }
@@ -2907,6 +3093,7 @@ function ccAdjBound(type, delta) {
   } else {
     clip.end = Math.max(clip.start + 3, Math.min(TL_STATE.duration, clip.end + d));
   }
+  ccSyncPreviewToClip();
   ccRefreshTracks();
   ccRefreshInspector();
 }
@@ -2922,9 +3109,24 @@ function ccSetBoundToPlayhead(type) {
   } else {
     clip.end = Math.max(clip.start + 3, Math.min(TL_STATE.duration, t));
   }
+  ccSyncPreviewToClip();
   toast(`Clip ${type} set to ${fmtTimecode(t)}`, "ok");
   ccRefreshTracks();
   ccRefreshInspector();
+}
+
+function ccUpdateRenderProgress(job) {
+  const progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
+  const fill = document.getElementById("ccRenderProgressFill");
+  const value = document.getElementById("ccRenderProgressValue");
+  const track = fill?.parentElement;
+  const stage = document.getElementById("ccRenderStage");
+  const detail = document.getElementById("ccRenderDetail");
+  if (fill) fill.style.width = `${progress}%`;
+  if (value) value.textContent = `${Math.round(progress)}%`;
+  if (track) track.setAttribute("aria-valuenow", String(Math.round(progress)));
+  if (stage) stage.textContent = job.stage || "Rendering";
+  if (detail) detail.textContent = job.detail || "Working on your edited clips";
 }
 
 async function applyCapCutEdits() {
@@ -2945,16 +3147,30 @@ async function applyCapCutEdits() {
   if (overlay) overlay.style.display = "flex";
 
   try {
-    toast("Re-rendering clips with AI Safe Framing & Kinetic Subtitles…", "loading", "Studio");
-    const res = await api(`/api/projects/${TL_STATE.projectId}/apply-timeline-edits`, {
-      method: "POST",
-      body: JSON.stringify({
-        clips: TL_STATE.clips,
-        editor_project: buildEditorProject()
-      })
+    ccUpdateRenderProgress({
+      progress: 0,
+      stage: "Saving edits",
+      detail: "Saving the latest project changes before rendering."
     });
+    if (!await ccSaveEditorProject(false, true)) {
+      throw new Error("Your edits could not be saved, so rendering was not started. Please try Save again.");
+    }
 
-    if (res && res.status === "success") {
+    const accepted = await send(`/api/projects/${TL_STATE.projectId}/apply-timeline-edits/start`, {
+      clips: TL_STATE.clips,
+      editor_project: buildEditorProject()
+    });
+    if (!accepted?.job_id) throw new Error("The server did not start a render job.");
+
+    let job = await api(`/api/editor-render-jobs/${accepted.job_id}`);
+    while (job.status !== "completed" && job.status !== "failed") {
+      ccUpdateRenderProgress(job);
+      await new Promise(resolve => setTimeout(resolve, 800));
+      job = await api(`/api/editor-render-jobs/${accepted.job_id}`);
+    }
+    ccUpdateRenderProgress(job);
+
+    if (job.status === "completed" && job.result?.status === "success") {
       toast("✨ All timeline clips re-rendered successfully!", "ok", "Studio Complete");
       await tick();
       const dlg = $("#timelinedlg");
@@ -2963,11 +3179,12 @@ async function applyCapCutEdits() {
       if (v) v.pause();
       render();
     } else {
-      throw new Error(res?.detail || "Failed to apply timeline edits");
+      throw new Error(job.error || "Failed to apply timeline edits");
     }
   } catch (err) {
     console.error("Apply CapCut Edits Error:", err);
     toast("Rendering error: " + (err.message || err), "bad");
+  } finally {
     if (overlay) overlay.style.display = "none";
   }
 }
@@ -3022,7 +3239,7 @@ document.addEventListener("keydown", (e) => {
   } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
     e.preventDefault();
     e.shiftKey ? ccRedo() : ccUndo();
-  } else if ((e.ctrlKey || e.metaKey) && e.key.toLower() === "y") {
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
     e.preventDefault();
     ccRedo();
   } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
@@ -3062,6 +3279,12 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     const delta = e.shiftKey ? 5 : 1 / TL_STATE.fps;
     v.currentTime = Math.max(0, Math.min(TL_STATE.duration, v.currentTime + (e.key === "ArrowRight" ? delta : -delta)));
+  } else if (e.key === "+" || e.key === "=") {
+    e.preventDefault();
+    ccSetZoom(TL_STATE.zoom * 1.25);
+  } else if (e.key === "-") {
+    e.preventDefault();
+    ccSetZoom(TL_STATE.zoom / 1.25);
   }
 });
 
@@ -3137,10 +3360,16 @@ document.addEventListener("click", async e => {
     return;
   }
   if (a === "cc_zoom") {
-    TL_STATE.zoom = Math.max(0.2, Math.min(8.0, TL_STATE.zoom + Number(d.delta || 0)));
-    const slider = document.getElementById("ccZoomSlider");
-    if (slider) slider.value = TL_STATE.zoom;
-    ccRefreshTracks();
+    const direction = Math.sign(Number(d.delta || 0));
+    ccSetZoom(TL_STATE.zoom * Math.pow(1.25, direction));
+    return;
+  }
+  if (a === "cc_zoom_fit") {
+    ccZoomToFit();
+    return;
+  }
+  if (a === "cc_zoom_selection") {
+    ccZoomToSelection();
     return;
   }
   if (a === "cc_dock") {
@@ -3601,10 +3830,19 @@ document.addEventListener("click", async e => {
     return;
   }
   if (a === "cliptopic") {
+    const card = b.closest(".chapter-card");
+    const originalHtml = b.innerHTML;
     b.disabled = true;
+    b.textContent = "Queueing…";
+    let latestProgress = 0;
+    updateChapterExtractProgress(card, {
+      progress: 0,
+      stage: "Saving chapter job",
+      detail: "Preparing this topic chapter for extraction"
+    });
     try {
-      toast("Extracting custom 9:16 short for topic chapter...", "ok");
-      await send("/api/clips/custom-extract", {
+      toast("Extracting the topic chapter into a vertical clip…", "loading", "Chapter Clip");
+      const accepted = await send("/api/clips/custom-extract/start", {
         project_id: d.j,
         start_sec: Number(d.start),
         end_sec: Number(d.end),
@@ -3612,11 +3850,32 @@ document.addEventListener("click", async e => {
         subtitle_style: "hormozi",
         layout_mode: "speaker_focus"
       });
+      if (!accepted?.job_id) throw new Error("The server did not start chapter extraction.");
+
+      let job = await api(`/api/render-jobs/${accepted.job_id}`);
+      while (job.status !== "completed" && job.status !== "failed") {
+        latestProgress = Number(job.progress) || latestProgress;
+        updateChapterExtractProgress(card, job);
+        await new Promise(resolve => setTimeout(resolve, 800));
+        job = await api(`/api/render-jobs/${accepted.job_id}`);
+      }
+      latestProgress = Number(job.progress) || latestProgress;
+      updateChapterExtractProgress(card, job);
+      if (job.status !== "completed" || job.result?.status !== "success") {
+        throw new Error(job.error || "Chapter extraction failed");
+      }
+
       toast("Chapter clip extracted successfully!", "ok");
-      tick();
+      await tick();
     } catch (err) {
-      toast(err.message, "bad");
+      updateChapterExtractProgress(card, {
+        progress: latestProgress,
+        stage: "Extraction failed",
+        detail: err.message || "Unable to create the chapter clip"
+      });
+      toast(`Chapter clip failed: ${err.message || err}`, "bad");
     } finally {
+      b.innerHTML = originalHtml;
       b.disabled = false;
     }
     return;
