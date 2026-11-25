@@ -377,7 +377,7 @@ function drawAdd(variant) {
             <span>Studio Settings</span>
             <span class="chip-badge">AI Presets</span>
           </button>
-          <span class="quick-summary-pill" id="composerQuickSummary">🎯 Auto-detect · 60-90s sweet spot · 5 clips</span>
+          <span class="quick-summary-pill" id="composerQuickSummary">🔍 AI Viral Research Active · 60–90s complete thoughts · 5 clips</span>
         </div>
 
         <button class="btn primary make-clips-btn" id="goBtn" type="submit">
@@ -823,7 +823,7 @@ function drawAtt() {
         </div>
         <div class="tx">
           <b>${esc(l.title || "YouTube Podcast")}</b>
-          <span>${esc(l.uploader || "YouTube Video")}</span>
+          <span>${esc(l.uploader || "YouTube Video")} · <b style="color:var(--brand)">AI Research &amp; Verification Ready</b></span>
         </div>
         <span class="ok">${ic("check")}Ready</span>
         <button type="button" class="rm" data-act="clearlink">${ic("x")}</button>
@@ -835,7 +835,7 @@ function drawAtt() {
         <div class="th" style="background:#332014;display:grid;place-items:center;color:#FFB27A">${ic("film")}</div>
         <div class="tx">
           <b>${esc(f.name)}</b>
-          <span>${(f.size / (1024 * 1024)).toFixed(1)} MB · local video file</span>
+          <span>${(f.size / (1024 * 1024)).toFixed(1)} MB · <b style="color:var(--brand)">AI Research &amp; Verification Ready</b></span>
         </div>
         <span class="ok">${ic("check")}Ready</span>
         <button type="button" class="rm" data-act="clearfile">${ic("x")}</button>
@@ -849,8 +849,11 @@ function scoreCls(s) { return s >= 85 ? "s-hi" : s >= 65 ? "s-mid" : ""; }
 function clipHtml(j, c) {
   const a = `data-j="${j.id}" data-c="${esc(c.id)}"`;
   const key = `c:${j.id}:${c.id}`;
-  const videoSrc = c.output_file ? `/media/${j.id}/${encodeURIComponent(c.filename)}` : "";
-  const thumbSrc = c.cover ? `/media/${j.id}/${encodeURIComponent(c.cover)}` : (c.filename ? `/media/${j.id}/${encodeURIComponent(c.filename.replace(/\.[^.]+$/, '.jpg'))}` : "");
+  const videoSrc = (c.filename || c.output_file) ? `/media/${j.id}/${encodeURIComponent(c.filename)}` : "";
+  const coversList = (c.covers && c.covers.length) ? c.covers : (c.cover ? [c.cover] : []);
+  const activeCover = c.cover || (coversList.length ? coversList[0] : "");
+  const thumbSrc = activeCover ? `/media/${j.id}/${encodeURIComponent(activeCover)}` : (c.filename ? `/media/${j.id}/${encodeURIComponent(c.filename.replace(/\.[^.]+$/, '.jpg'))}` : "");
+  const folderName = c.folder_name || (c.topic ? c.topic.replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_') : "");
 
   return `
     <article class="clip ${S.sel.has(key) ? "picked" : ""}">
@@ -859,14 +862,31 @@ function clipHtml(j, c) {
         <span class="veil"><span>${ic("play")}</span></span>
         <span class="badge l ${scoreCls(c.virality_score || c.score || 90)}" title="AI Virality Score">${c.virality_score || c.score || 90}</span>
         <span class="badge r">${fmt(c.duration || (c.end - c.start) || 30)}</span>
+        ${coversList.length > 1 ? `
+          <div class="clip-thumb-bar" role="group" aria-label="Choose viral thumbnail variation" onclick="event.stopPropagation()">
+            ${coversList.map((cov, idx) => {
+              const cSrc = `/media/${j.id}/${encodeURIComponent(cov)}`;
+              const isSel = (cov === activeCover) || (!activeCover && idx === 0);
+              const archetypes = [
+                { icon: "🤯", label: "Curiosity" },
+                { icon: "⚠️", label: "Warning" },
+                { icon: "🎯", label: "Authority" }
+              ];
+              const aMeta = archetypes[idx] || { icon: "🖼️", label: `Cover ${idx + 1}` };
+              return `<button type="button" class="thumb-pill-btn ${isSel ? "active" : ""}" data-act="switchcardthumb" ${a} data-cov="${esc(cov)}" data-src="${cSrc}" title="${aMeta.label} Cover (${idx + 1} of ${coversList.length})">${aMeta.icon} <span class="pill-lbl">${aMeta.label}</span></button>`;
+            }).join("")}
+          </div>
+        ` : ""}
       </button>
       <div class="clip-body">
+        ${folderName ? `<div class="clip-folder-badge" title="Organized in dedicated folder: ${esc(folderName)}"><span class="f-icon">📁</span><span class="f-name">${esc(folderName)}</span></div>` : ""}
         <div class="hook">${esc(c.hook || c.title || "Viral Highlight")}</div>
         <div class="ttl">${esc(c.title || c.full_transcript || "")}</div>
         <div class="clip-foot">
           <label class="selck" title="Select clip"><input type="checkbox" data-sel="${key}" ${S.sel.has(key) ? "checked" : ""}></label>
           ${videoSrc ? `<a class="btn sm icon ghost" href="${videoSrc}" download title="Download MP4">${ic("down")}</a>` : ""}
-          ${thumbSrc ? `<a class="btn sm icon ghost" href="${thumbSrc}" download="${esc(c.filename ? c.filename.replace(/\.[^.]+$/, '.jpg') : 'thumbnail.jpg')}" title="Download TikTok Cover Thumbnail (1080x1920 JPG)" style="font-size:13px;line-height:1">🖼️</a>` : ""}
+          ${thumbSrc ? `<a class="btn sm icon ghost card-thumb-dl" href="${thumbSrc}" download="${esc(activeCover ? activeCover.split('/').pop() : (c.filename ? c.filename.replace(/\.[^.]+$/, '.jpg') : 'thumbnail.jpg'))}" title="Download TikTok Cover Thumbnail (1080x1920 JPG)" style="font-size:13px;line-height:1">🖼️</a>` : ""}
+          <a class="btn sm ghost" href="/api/clips/${c.id}/download-zip" download title="Download Complete Clip Package (Folder with MP4, 3 Viral Covers, Clip Docs ZIP)" style="font-size:11px;font-weight:700;padding:0 7px;gap:3px;color:var(--brand)">📦 ZIP</a>
           <button type="button" class="btn sm icon ghost gdrive-card-btn" data-act="uploadgdrive" data-j="${j.id}" data-c="${c.id}" title="Upload to Google Drive (for mobile TikTok)">▲</button>
           <button class="btn sm icon ghost" data-act="copy" ${a} title="Copy social caption">${ic("copy")}</button>
           <button class="btn sm icon ghost" data-act="delclip" ${a} title="Delete">${ic("trash")}</button>
@@ -918,8 +938,9 @@ function jobHtml(j) {
         </div>
         <div class="row" style="gap:6px">
           ${hasBrief ? `<button class="btn sm" data-act="togglebrief" data-j="${j.id}">${briefExpanded ? "▲ Hide Brief" : "🧠 Executive Brief & Heatmap"}</button>` : ""}
+          ${!busy ? `<button class="btn sm highlight-editor-btn" data-act="openeditor" data-j="${j.id}" title="Open Interactive Timeline Multi-Clip Editor">🎬 Timeline Editor</button>` : ""}
           ${clips.length ? `<a class="btn sm ghost" href="/api/projects/${j.id}/download-docs" download title="Download Session Docs (.docx) with topics, titles & hashtags" style="font-size:11px;font-weight:600;padding:0 8px;gap:4px">📄 Docs</a>` : ""}
-          ${clips.length ? `<button class="btn sm icon ghost" data-act="dlall" data-j="${j.id}" title="Download all clips ZIP (with docs file)">${ic("down")}</button>` : ""}
+          ${clips.length ? `<a class="btn sm ghost" href="/api/projects/${j.id}/download-zip" download title="Download all clips organized in dedicated topic folders with 3 viral thumbnails & docs" style="font-size:11px;font-weight:700;padding:0 8px;gap:4px;color:var(--brand)">📦 ZIP All</a>` : ""}
           <button class="btn sm icon ghost" data-act="deljob" data-j="${j.id}" title="Delete project">${ic("trash")}</button>
           <label class="selck" title="Select project"><input type="checkbox" data-sel="j:${j.id}" ${S.sel.has("j:" + j.id) ? "checked" : ""}></label>
         </div>
@@ -948,7 +969,7 @@ function pipelineTrackerHtml(j, pct) {
 
   const stages = [
     { num: 1, name: "Transcribe", label: "Whisper AI" },
-    { num: 2, name: "AI Topics", label: "Viral Arc" },
+    { num: 2, name: "AI Research", label: "Verify Viral Clips" },
     { num: 3, name: "Framing", label: "Safe Layout" },
     { num: 4, name: "Subtitles", label: "Kinetic ASS" },
     { num: 5, name: "Render & Covers", label: "NVENC / CPU" }
@@ -1340,6 +1361,25 @@ function openClip(jid, cid) {
           <button class="btn icon ghost modal-close-btn" data-act="closedlg" title="Close editor">${ic("x")}</button>
         </div>
 
+        <!-- AI Video Edit Copilot -->
+        <div class="ai-copilot-container">
+          <div class="ai-copilot-header">
+            <span class="ai-copilot-title">${ic("bolt")} AI Video Edit Copilot</span>
+            <span class="ai-copilot-badge">Natural Language Re-Editor</span>
+          </div>
+          <div class="ai-copilot-input-row">
+            <input id="ai_copilot_prompt" placeholder="Command AI: e.g. 'Make hook more aggressive', 'Focus on wealth', 'Hype style'..." />
+            <button type="button" class="btn sm primary" data-act="runcopilot">${ic("bolt")} Apply Edit</button>
+          </div>
+          <div class="ai-copilot-quick-chips">
+            <button type="button" class="copilot-chip" data-act="copilotpreset" data-preset="sharpen_hook">⚡ Sharpen Hook</button>
+            <button type="button" class="copilot-chip" data-act="copilotpreset" data-preset="add_controversy">🔥 Add Controversy</button>
+            <button type="button" class="copilot-chip" data-act="copilotpreset" data-preset="focus_wealth">💰 Focus on Wealth</button>
+            <button type="button" class="copilot-chip" data-act="copilotpreset" data-preset="mrbeast_hype">⚡ MrBeast Subtitles</button>
+            <button type="button" class="copilot-chip" data-act="copilotpreset" data-preset="clean_editorial">🎯 Clean Minimal</button>
+          </div>
+        </div>
+
         <!-- Clean Navigation Tabs for Edit Modal -->
         <div class="modal-subnav-tabs" role="tablist">
           <button type="button" class="modal-tab-btn active" data-modaltab="video" role="tab">
@@ -1553,6 +1593,54 @@ function openClip(jid, cid) {
           <!-- Dropdown/Panel for AI Suggested Thumbnail Hooks -->
           <div id="ai_thumb_hooks_panel" style="display:none;background:#1E1510;border:1px solid rgba(255,139,51,0.3);border-radius:8px;padding:10px;margin-bottom:12px"></div>
 
+          <!-- 3 Pre-Generated Viral Variations Gallery -->
+          ${(() => {
+            const modalCovers = (c.covers && c.covers.length) ? c.covers : (c.cover ? [c.cover] : []);
+            if (!modalCovers.length) return "";
+            return `
+              <div class="covers-variation-gallery">
+                <div class="covers-gallery-title-row">
+                  <span class="gallery-title">🎯 3 Pre-Generated Viral Cover Variations</span>
+                  <span class="gallery-subtitle">Choose the highest-CTR angle for TikTok. Click "Set Active" to select as primary cover.</span>
+                </div>
+                <div class="covers-cards-grid">
+                  ${modalCovers.map((cov, idx) => {
+                    const cSrc = `/media/${j.id}/${encodeURIComponent(cov)}`;
+                    const isCurrent = (cov === (c.cover || modalCovers[0]));
+                    const archetypes = [
+                      { name: "Curiosity Loop", icon: "🤯", desc: "Golden hook ribbon, high psychological intrigue", accent: "#FFE600" },
+                      { name: "Red Alert", icon: "⚠️", desc: "Urgent warning & mistake callout for urgency", accent: "#EF4444" },
+                      { name: "Authority Blueprint", icon: "🎯", desc: "Cyan system blueprint & credible framework", accent: "#00E5FF" }
+                    ];
+                    const aInfo = archetypes[idx] || { name: `Cover ${idx + 1}`, icon: "🖼️", desc: "Viral generated thumbnail", accent: "#FFE600" };
+                    return `
+                      <div class="cover-card-box ${isCurrent ? 'is-active-cover' : ''}">
+                        <div class="cover-card-preview">
+                          <img src="${cSrc}" alt="${aInfo.name}" loading="lazy">
+                          ${isCurrent ? `<span class="active-cover-pill">✓ ACTIVE</span>` : ""}
+                        </div>
+                        <div class="cover-card-meta">
+                          <div class="cover-card-name" style="color:${aInfo.accent}">${aInfo.icon} ${aInfo.name}</div>
+                          <div class="cover-card-desc">${aInfo.desc}</div>
+                          <div class="cover-card-actions">
+                            <button type="button" class="btn sm ${isCurrent ? 'ghost disabled' : 'primary-soft'}" data-act="setdefaultcover" data-c="${c.id}" data-cov="${esc(cov)}" data-src="${cSrc}">
+                              ${isCurrent ? '✓ Active' : 'Set Active'}
+                            </button>
+                            <a class="btn sm icon ghost" href="${cSrc}" download="${esc(cov.split('/').pop())}" title="Download 1080x1920 JPG">🖼️</a>
+                          </div>
+                        </div>
+                      </div>
+                    `;
+                  }).join("")}
+                </div>
+              </div>
+            `;
+          })()}
+
+          <div style="font-size:12px;font-weight:700;color:var(--dim);margin:14px 0 8px 0;border-top:1px dashed var(--line);padding-top:10px">
+            🎨 Custom Cover Fine-Tuner & Re-Generator:
+          </div>
+
           <div class="hook-archetypes-row" style="margin-bottom:12px">
             <button type="button" class="hook-arch-pill on" data-act="setthumbarch" data-arch="curiosity">🤯 Curiosity Loop</button>
             <button type="button" class="hook-arch-pill" data-act="setthumbarch" data-arch="warning">⚠️ Warning / Mistake</button>
@@ -1592,10 +1680,16 @@ function openClip(jid, cid) {
 
         <!-- TAB 4: SOCIAL MEDIA POST COPY -->
         <div class="modal-tab-pane" id="pane_modaltab_social">
-          <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
-            <span style="font-size:12px;font-weight:700;color:#F8F3EF">Optimized Caption Kit</span>
-            <button class="btn sm" data-act="rewritetext">${ic("bolt")}AI Rewrite</button>
+          <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:12px">
+            <div>
+              <span style="font-size:12.5px;font-weight:800;color:#F8F3EF">Multi-Platform Publishing Kit</span>
+              <div style="font-size:11px;color:#A89C94">TikTok · Instagram Reels · YouTube Shorts</div>
+            </div>
+            <button class="btn sm primary" data-act="gensocialkit">${ic("bolt")} Auto-Generate Social Kit</button>
           </div>
+
+          <div id="social_kit_rendered_box" style="margin-bottom:12px"></div>
+
           <label class="f">Title<input id="ed_title" value="${esc(c.title || "")}"></label>
           <label class="f">Description<textarea id="ed_desc" rows="3">${esc(c.description || (c.social_kit?.youtube_shorts?.description) || "")}</textarea></label>
           <label class="f">Hashtags<input id="ed_tags" value="${esc((c.social_kit?.viral_hashtags || []).join(" "))}"></label>
@@ -1610,6 +1704,7 @@ function openClip(jid, cid) {
           </button>
           ${videoSrc ? `<a class="btn" id="ed_download_btn" href="${videoSrc}" download>${ic("down")}Download MP4</a>` : `<a class="btn" id="ed_download_btn" href="#" download style="display:none">${ic("down")}Download MP4</a>`}
           ${thumbSrc ? `<a class="btn" id="ed_thumb_btn" href="${thumbSrc}" download="${esc(c.filename ? c.filename.replace(/\.[^.]+$/, '.jpg') : 'thumbnail.jpg')}" title="Download TikTok Cover Thumbnail (1080x1920 JPG)">🖼️ Cover</a>` : ""}
+          <a class="btn clip-zip-btn" href="/api/clips/${c.id}/download-zip" download title="Download Complete Clip Package (Folder with MP4, 3 Thumbnails, Clip Docs as ZIP)">📦 Clip ZIP</a>
           <button type="button" class="btn gdrive-upload-btn" data-act="uploadgdrive" data-j="${j.id}" data-c="${c.id}">
             <span style="font-weight:900">▲</span> Drive
           </button>
@@ -1893,6 +1988,1083 @@ function loop() {
   }, pollInterval);
 }
 
+/* ============================================================
+   CapCut-Style Professional NLE Timeline Studio
+   Replaces lines 1991–2626 in app.js
+   ============================================================ */
+
+const TL_STATE = {
+  projectId: null,
+  project: null,
+  duration: 600,
+  fps: 30,
+  width: 1080,
+  height: 1920,
+  saveStatus: "Saved",
+  isDirty: false,
+  clipboard: null,
+  tracks: [],
+  clips: [],
+  activeClipIdx: 0,
+  activeTab: "cuts",
+  zoom: 1.0,
+  isPlaying: false,
+  isLooping: false,
+  showTikTokGuides: false,
+  volume: 1.0,
+  isMuted: false,
+  dragTarget: null,
+  _animFrame: null,
+  _undoStack: [],
+  _redoStack: []
+};
+
+function fmtTimecode(sec) {
+  const s = Math.max(0, Number(sec) || 0);
+  const m = Math.floor(s / 60);
+  const remSec = (s % 60).toFixed(1);
+  const padSec = Number(remSec) < 10 ? "0" + remSec : remSec;
+  return `${m}:${padSec}`;
+}
+
+function secToFrames(sec, fps = TL_STATE.fps) {
+  return Math.max(0, Math.round((Number(sec) || 0) * fps));
+}
+
+function framesToSec(frames, fps = TL_STATE.fps) {
+  return Math.max(0, Number(frames) || 0) / fps;
+}
+
+function buildEditorProject() {
+  return {
+    projectId: TL_STATE.projectId,
+    title: document.getElementById("ccProjectTitle")?.value || TL_STATE.project?.title || "Untitled Project",
+    fps: TL_STATE.fps,
+    width: TL_STATE.width,
+    height: TL_STATE.height,
+    durationFrames: secToFrames(TL_STATE.duration),
+    tracks: TL_STATE.tracks,
+    clips: TL_STATE.clips,
+    settings: {
+      aspectRatio: `${TL_STATE.width}:${TL_STATE.height}`,
+      resolution: `${TL_STATE.width}x${TL_STATE.height}`
+    }
+  };
+}
+
+function ccMarkDirty() {
+  TL_STATE.isDirty = true;
+  TL_STATE.saveStatus = "Unsaved changes";
+  const status = document.getElementById("ccSaveStatus");
+  if (status) status.textContent = TL_STATE.saveStatus;
+  clearTimeout(TL_STATE._autosaveTimer);
+  TL_STATE._autosaveTimer = setTimeout(ccSaveEditorProject, 1200);
+}
+
+async function ccSaveEditorProject(manual = false) {
+  if (!TL_STATE.projectId) return;
+  TL_STATE.saveStatus = "Saving...";
+  const status = document.getElementById("ccSaveStatus");
+  if (status) status.textContent = TL_STATE.saveStatus;
+  try {
+    const project = buildEditorProject();
+    const res = await api(`/api/projects/${TL_STATE.projectId}/editor-state`, {
+      method: "POST",
+      body: JSON.stringify({ editor_project: project, title: project.title })
+    });
+    if (!res || res.status !== "success") throw new Error("Save failed");
+    TL_STATE.isDirty = false;
+    TL_STATE.saveStatus = "Saved";
+    if (status) status.textContent = TL_STATE.saveStatus;
+    if (manual) toast("Project saved", "ok");
+  } catch (err) {
+    TL_STATE.saveStatus = "Save failed";
+    if (status) status.textContent = TL_STATE.saveStatus;
+    if (manual) toast(err.message || "Failed to save project", "bad");
+  }
+}
+
+function ccSaveUndo() {
+  TL_STATE._undoStack.push(JSON.stringify(TL_STATE.clips));
+  if (TL_STATE._undoStack.length > 100) TL_STATE._undoStack.shift();
+  TL_STATE._redoStack = [];
+  ccMarkDirty();
+}
+
+async function openTimelineEditor(projectId) {
+  try {
+    toast("Loading CapCut Studio...", "loading", "Timeline Studio");
+    const proj = await api(`/api/projects/${projectId}`);
+    if (!proj) { toast("Project could not be loaded", "bad"); return; }
+
+    TL_STATE.projectId = projectId;
+    TL_STATE.project = proj;
+    TL_STATE.duration = Math.max(10.0, Number(proj.duration || 600));
+    const saved = proj.editor_project;
+    TL_STATE.fps = Number(saved?.fps || 30);
+    TL_STATE.width = Number(saved?.width || 1080);
+    TL_STATE.height = Number(saved?.height || 1920);
+    TL_STATE.activeTab = "cuts";
+    TL_STATE.zoom = 1.0;
+    TL_STATE.isPlaying = false;
+    TL_STATE.isLooping = false;
+    TL_STATE.showTikTokGuides = false;
+    TL_STATE._undoStack = [];
+    TL_STATE._redoStack = [];
+
+    if (saved?.tracks) {
+      TL_STATE.tracks = saved.tracks;
+      const savedClips = saved.clips || [];
+      TL_STATE.clips = savedClips.length ? savedClips.map((c, i) => ({
+        ...c,
+        id: c.id || `clip_${i + 1}`,
+        start: Math.max(0, Number(c.start ?? c.sourceInSec ?? 0)),
+        end: Math.min(TL_STATE.duration, Number(c.end ?? (c.sourceInSec || 0) + (c.durationSec || 30))),
+        title: c.title || c.topic || c.name || `Clip ${i + 1}`,
+        hook: c.hook || c.title || ""
+      })) : [];
+    } else {
+      TL_STATE.tracks = [
+        { id: "video-main", type: "video", name: "Main Video", order: 0, visible: true, muted: false, locked: false, clips: [] },
+        { id: "captions", type: "caption", name: "Captions", order: 1, visible: true, muted: false, locked: false, clips: [] },
+        { id: "hooks", type: "text", name: "Hooks", order: 2, visible: true, muted: false, locked: false, clips: [] },
+        { id: "audio", type: "audio", name: "Voice", order: 3, visible: true, muted: false, locked: false, clips: [] }
+      ];
+    }
+
+    if ((!saved?.tracks || !TL_STATE.clips.length) && proj.clips && proj.clips.length > 0) {
+      TL_STATE.clips = proj.clips.map((c, i) => ({
+        id: c.id || `clip_${i + 1}`,
+        start: Math.max(0, Number(c.start !== undefined ? c.start : (c.start_sec !== undefined ? c.start_sec : (i * 60)))),
+        end: Math.min(TL_STATE.duration, Number(c.end !== undefined ? c.end : (c.end_sec !== undefined ? c.end_sec : ((i * 60) + 45)))),
+        title: c.title || c.topic || `Clip ${i + 1}`,
+        hook: c.hook || c.title || "",
+        subtitle_style: c.subtitle_style || "hormozi",
+        layout_mode: c.layout_mode || "speaker_focus",
+        top_padding: Number(c.top_padding || 0),
+        bottom_padding: Number(c.bottom_padding || 0),
+        canvas_top_space: Number(c.canvas_top_space || 450),
+        virality_score: Number(c.virality_score || 92)
+      }));
+    } else {
+      TL_STATE.clips = [{
+        id: "clip_1", start: 0, end: Math.min(60, TL_STATE.duration),
+        title: "Viral Highlight 1", hook: "PODCAST HIGHLIGHT",
+        subtitle_style: "hormozi", layout_mode: "speaker_focus",
+        top_padding: 0, bottom_padding: 0, canvas_top_space: 450, virality_score: 92
+      }];
+    }
+
+    TL_STATE.activeClipIdx = 0;
+    renderCapCutStudio();
+
+    const dlg = $("#timelinedlg");
+    if (dlg) dlg.showModal();
+  } catch (err) {
+    console.error("Timeline Editor Error:", err);
+    toast("Error loading timeline editor: " + (err.message || err), "bad");
+  }
+}
+
+/* ---- Sub-inspector panels ---- */
+function renderSubInspector(tab) {
+  const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+  if (!clip && tab === "cuts") return `<div class="cc-insp-empty">No clips yet. Add a clip below.</div>`;
+
+  if (tab === "cuts") {
+    const dur = Math.max(0, clip.end - clip.start).toFixed(1);
+    return `
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">📋 Clip ${TL_STATE.activeClipIdx + 1} of ${TL_STATE.clips.length}</div>
+      <input class="cc-insp-title-input" data-field="title" value="${esc(clip.title)}" placeholder="Clip title…" />
+    </div>
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">⏱ Start Time</div>
+      <div class="cc-bound-row">
+        <button class="cc-bound-btn" data-act="cc_adj_bound" data-type="start" data-delta="-5">-5s</button>
+        <button class="cc-bound-btn" data-act="cc_adj_bound" data-type="start" data-delta="-1">-1s</button>
+        <span class="cc-timecode-pill">${fmtTimecode(clip.start)}</span>
+        <button class="cc-bound-btn" data-act="cc_adj_bound" data-type="start" data-delta="1">+1s</button>
+        <button class="cc-bound-btn" data-act="cc_adj_bound" data-type="start" data-delta="5">+5s</button>
+      </div>
+      <button class="cc-ph-set-btn" data-act="cc_set_bound_playhead" data-type="start">⏱ Set to Playhead</button>
+    </div>
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">⏱ End Time</div>
+      <div class="cc-bound-row">
+        <button class="cc-bound-btn" data-act="cc_adj_bound" data-type="end" data-delta="-5">-5s</button>
+        <button class="cc-bound-btn" data-act="cc_adj_bound" data-type="end" data-delta="-1">-1s</button>
+        <span class="cc-timecode-pill">${fmtTimecode(clip.end)}</span>
+        <button class="cc-bound-btn" data-act="cc_adj_bound" data-type="end" data-delta="1">+1s</button>
+        <button class="cc-bound-btn" data-act="cc_adj_bound" data-type="end" data-delta="5">+5s</button>
+      </div>
+      <button class="cc-ph-set-btn" data-act="cc_set_bound_playhead" data-type="end">⏱ Set to Playhead</button>
+    </div>
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">📊 Duration: <strong style="color:#00e5ff">${dur}s</strong>
+        <span class="cc-viral-badge" style="background:${clip.virality_score>=85?'#ff4444':'#f97316'}">${clip.virality_score}% Viral</span>
+      </div>
+    </div>
+    <div class="cc-insp-section" style="margin-top:auto;display:flex;gap:8px">
+      <button class="cc-insp-add-btn" data-act="cc_add_clip">＋ Add Clip</button>
+      <button class="cc-insp-del-btn" data-act="cc_del_clip">🗑 Remove</button>
+    </div>`;
+  }
+
+  if (tab === "captions") {
+    const ss = clip ? clip.subtitle_style : "hormozi";
+    return `
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">💬 Caption Style</div>
+      ${["hormozi","mrbeast","cyber","clean"].map(s => `
+        <label class="cc-style-chip ${ss===s?'active':''}">
+          <input type="radio" name="subtitle_style" value="${s}" ${ss===s?'checked':''} data-field="subtitle_style" style="display:none">
+          ${s.charAt(0).toUpperCase()+s.slice(1)}
+        </label>`).join('')}
+    </div>
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">🔤 Word Case</div>
+      <select class="cc-select" data-field="word_case">
+        <option value="upper">UPPER CASE</option>
+        <option value="title">Title Case</option>
+        <option value="lower">lower case</option>
+      </select>
+    </div>
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">😄 Inject Emojis</div>
+      <label class="cc-toggle"><input type="checkbox" data-field="inject_emojis"> <span>Auto-add emojis</span></label>
+    </div>
+    <div class="cc-caption-preview">
+      <span style="font-weight:900;font-size:20px;text-transform:uppercase;color:#fff;text-shadow:2px 2px 0 #000">CAPTION PREVIEW</span>
+    </div>`;
+  }
+
+  if (tab === "hooks") {
+    const hook = clip ? clip.hook : "";
+    const hookStyle = clip ? (clip.hook_style || "yellow") : "yellow";
+    return `
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">🎯 Hook Banner Text</div>
+      <textarea class="cc-textarea" data-field="hook" rows="3" placeholder="Enter hook text…">${esc(hook)}</textarea>
+    </div>
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">🎨 Banner Style</div>
+      ${["yellow","red","cyan","minimal"].map(s => `
+        <label class="cc-style-chip hook-style-${s} ${hookStyle===s?'active':''}">
+          <input type="radio" name="hook_style" value="${s}" ${hookStyle===s?'checked':''} data-field="hook_style" style="display:none">
+          ${s.charAt(0).toUpperCase()+s.slice(1)}
+        </label>`).join('')}
+    </div>
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">🔤 Font Weight</div>
+      <label class="cc-toggle"><input type="checkbox" data-field="hook_bold" ${clip&&clip.hook_bold?'checked':''}> <span>Bold text</span></label>
+    </div>
+    <div class="cc-hook-preview" style="background:${hookStyle==='yellow'?'#FFD700':hookStyle==='red'?'#ff4444':hookStyle==='cyan'?'#00e5ff':'rgba(0,0,0,0.6)'};color:${hookStyle==='yellow'||hookStyle==='cyan'?'#000':'#fff'};padding:8px;border-radius:6px;text-align:center;font-weight:900;font-size:14px;margin-top:8px">
+      ${esc(hook || "HOOK BANNER PREVIEW")}
+    </div>`;
+  }
+
+  if (tab === "framing") {
+    const lm = clip ? clip.layout_mode : "speaker_focus";
+    const tp = clip ? clip.top_padding : 0;
+    const bp = clip ? clip.bottom_padding : 0;
+    const cts = clip ? clip.canvas_top_space : 450;
+    return `
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">🎥 Layout Mode</div>
+      <select class="cc-select" data-field="layout_mode">
+        ${["speaker_focus","split_screen","full_frame","talking_head"].map(m =>
+          `<option value="${m}" ${lm===m?'selected':''}>${m.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}</option>`).join('')}
+      </select>
+    </div>
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">⬆ Top Padding: <span id="ccTopPadNum">${tp}</span>%</div>
+      <input type="range" class="cc-slider" data-field="top_padding" min="0" max="40" step="1" value="${tp}">
+    </div>
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">⬇ Bottom Padding: <span id="ccBotPadNum">${bp}</span>%</div>
+      <input type="range" class="cc-slider" data-field="bottom_padding" min="0" max="40" step="1" value="${bp}">
+    </div>
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">📐 Canvas Top Space: <span id="ccCtsNum">${cts}</span>px</div>
+      <input type="range" class="cc-slider" data-field="canvas_top_space" min="200" max="700" step="10" value="${cts}">
+    </div>`;
+  }
+
+  if (tab === "audio") {
+    return `
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">🔊 Volume</div>
+      <input type="range" class="cc-slider" id="ccVolSlider" min="0" max="1" step="0.05" value="${TL_STATE.volume}">
+    </div>
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">🎙 Voice Clarifier</div>
+      <label class="cc-toggle"><input type="checkbox" id="ccVoiceClarify"> <span>Enhance speech clarity</span></label>
+    </div>
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">🎵 Background Music</div>
+      <label class="cc-toggle"><input type="checkbox" id="ccBgMusic"> <span>Add lo-fi background</span></label>
+    </div>
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">🔇 Mute Preview</div>
+      <label class="cc-toggle"><input type="checkbox" id="ccMuteToggle" ${TL_STATE.isMuted?'checked':''}> <span>Mute video preview</span></label>
+    </div>`;
+  }
+
+  if (tab === "covers") {
+    return `
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">🖼 Thumbnail Color</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${["#ff4444","#ff9800","#4caf50","#2196f3","#9c27b0","#FFD700"].map(col =>
+          `<div class="cc-color-swatch" style="background:${col}" data-act="cc_cover_color" data-color="${col}"></div>`).join('')}
+      </div>
+    </div>
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">💧 Watermark Text</div>
+      <input class="cc-insp-title-input" data-field="watermark" placeholder="@YourHandle" value="">
+    </div>
+    <div class="cc-insp-section">
+      <div class="cc-insp-label">📸 Cover Frames (3 auto-generated per clip)</div>
+      <div style="font-size:11px;color:#888">Applied after re-render</div>
+    </div>`;
+  }
+
+  return "";
+}
+
+/* ---- Tracks HTML ---- */
+function buildTracksHtml() {
+  const dur = TL_STATE.duration;
+  const zoom = TL_STATE.zoom;
+  const pxPerSec = 60 * zoom;
+  const totalW = Math.max(800, dur * pxPerSec + 60);
+
+  // Ruler
+  const tickStep = zoom < 0.5 ? 60 : zoom < 1 ? 30 : zoom < 2 ? 15 : 10;
+  let rulerHtml = "";
+  for (let t = 0; t <= dur; t += tickStep) {
+    const x = t * pxPerSec;
+    rulerHtml += `<div class="cc-ruler-tick" style="left:${x}px"><span>${fmtTimecode(t)}</span></div>`;
+  }
+
+  // Video clips
+  let videoTrackHtml = "";
+  TL_STATE.clips.forEach((c, i) => {
+    const x = c.start * pxPerSec;
+    const w = Math.max(2, (c.end - c.start) * pxPerSec);
+    const isActive = i === TL_STATE.activeClipIdx;
+    videoTrackHtml += `
+      <div class="cc-video-clip ${isActive ? 'active' : ''}" data-act="cc_select_clip" data-idx="${i}"
+           style="left:${x}px;width:${w}px" title="${esc(c.title)}">
+        <div class="cc-clip-trim-handle left" data-act="cc_trim" data-idx="${i}" data-side="start"></div>
+        <span class="cc-clip-label">${esc(c.title)}</span>
+        <span class="cc-clip-dur">${(c.end - c.start).toFixed(1)}s</span>
+        <div class="cc-clip-trim-handle right" data-act="cc_trim" data-idx="${i}" data-side="end"></div>
+      </div>`;
+  });
+
+  // Caption track items
+  let captionTrackHtml = "";
+  TL_STATE.clips.forEach((c, i) => {
+    const x = c.start * pxPerSec;
+    const w = Math.max(2, (c.end - c.start) * pxPerSec);
+    captionTrackHtml += `
+      <div class="cc-caption-item" style="left:${x}px;width:${w}px" data-act="cc_select_clip" data-idx="${i}">
+        <span class="cc-caption-label">${esc(c.subtitle_style || "hormozi")}</span>
+      </div>`;
+  });
+
+  // Hook track items
+  let hookTrackHtml = "";
+  TL_STATE.clips.forEach((c, i) => {
+    if (!c.hook) return;
+    const x = c.start * pxPerSec;
+    const w = Math.max(2, Math.min((c.end - c.start) * pxPerSec * 0.4, 120));
+    hookTrackHtml += `
+      <div class="cc-hook-item" style="left:${x}px;width:${w}px" data-act="cc_select_clip" data-idx="${i}">
+        <span>${esc(c.hook.substring(0, 20))}</span>
+      </div>`;
+  });
+
+  return { rulerHtml, videoTrackHtml, captionTrackHtml, hookTrackHtml, totalW, pxPerSec };
+}
+
+/* ---- Main render ---- */
+function renderCapCutStudio() {
+  const dlg = $("#timelinedlg");
+  if (!dlg) return;
+
+  const proj = TL_STATE.project || {};
+  const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+  const { rulerHtml, videoTrackHtml, captionTrackHtml, hookTrackHtml, totalW } = buildTracksHtml();
+  const inspHtml = renderSubInspector(TL_STATE.activeTab);
+
+  const tabs = [
+    { id: "cuts",     icon: "✂️", label: "Cuts" },
+    { id: "captions", icon: "💬", label: "Captions" },
+    { id: "hooks",    icon: "🎯", label: "Hooks" },
+    { id: "framing",  icon: "🎥", label: "Framing" },
+    { id: "audio",    icon: "🔊", label: "Audio" },
+    { id: "covers",   icon: "🖼️", label: "Covers" }
+  ];
+
+  dlg.innerHTML = `
+  <div class="cc-studio-root">
+    <!-- TOP BAR -->
+    <div class="cc-topbar">
+      <div class="cc-topbar-left">
+        <span class="cc-logo-badge">🎬 CapForge</span>
+        <input class="cc-project-title-input" id="ccProjectTitle" value="${esc(proj.title || 'Untitled Project')}" placeholder="Project title…">
+        <span class="cc-dur-pill">${fmtTimecode(TL_STATE.duration)}</span>
+        <span class="cc-save-status" id="ccSaveStatus">${TL_STATE.saveStatus}</span>
+      </div>
+      <div class="cc-topbar-tools">
+        <button class="cc-tool-btn" data-act="cc_split" title="Split at playhead">✂️ Split</button>
+        <button class="cc-tool-btn" data-act="cc_del_clip" title="Delete active clip">🗑 Delete</button>
+        <button class="cc-tool-btn ${TL_STATE.isLooping ? 'active' : ''}" data-act="cc_loop" title="Loop">🔁 Loop</button>
+        <button class="cc-tool-btn ${TL_STATE.showTikTokGuides ? 'active' : ''}" data-act="cc_tiktok_guides" title="TikTok Safe Zones">📐 Guides</button>
+      </div>
+      <div class="cc-topbar-right">
+        <span class="cc-dur-pill">${TL_STATE.width}×${TL_STATE.height} · ${TL_STATE.fps} fps</span>
+        <button class="cc-tool-btn" data-act="cc_save" title="Save project (Ctrl+S)">💾 Save</button>
+        <button class="cc-apply-btn" data-act="cc_apply">🚀 Apply & Re-render</button>
+        <button class="cc-close-btn" data-act="closetimeline">✕</button>
+      </div>
+    </div>
+
+    <!-- MAIN WORKSPACE -->
+    <div class="cc-main-workspace">
+
+      <!-- LEFT NAV DOCK -->
+      <div class="cc-nav-dock">
+        ${tabs.map(t => `
+          <button class="cc-dock-btn ${TL_STATE.activeTab === t.id ? 'active' : ''}"
+                  data-act="cc_dock" data-tab="${t.id}" title="${t.label}">
+            <span class="cc-dock-icon">${t.icon}</span>
+            <span class="cc-dock-label">${t.label}</span>
+          </button>`).join('')}
+      </div>
+
+      <!-- SUB-INSPECTOR -->
+      <div class="cc-sub-inspector" id="ccInspector">
+        ${inspHtml}
+      </div>
+
+      <!-- CENTER CANVAS (Phone Preview) -->
+      <div class="cc-center-canvas">
+        <div class="cc-preview-phone-frame">
+          <video id="ccVideo"
+            src="/api/projects/${TL_STATE.projectId}/source-video"
+            preload="metadata"
+            style="width:100%;height:100%;object-fit:cover;border-radius:inherit"
+            playsinline></video>
+
+          <!-- Hook Banner Overlay -->
+          <div class="cc-overlay-banner" id="ccBannerOverlay" style="${clip && clip.hook ? '' : 'display:none'}">
+            ${clip ? esc(clip.hook) : ''}
+          </div>
+
+          <!-- Subtitle Overlay -->
+          <div class="cc-overlay-subtitle" id="ccSubtitleOverlay">
+            <span class="cc-sub-word">SUBTITLE PREVIEW</span>
+          </div>
+
+          <!-- TikTok Guides -->
+          <div class="cc-tiktok-guides" id="ccTikTokGuides" style="${TL_STATE.showTikTokGuides ? '' : 'display:none'}">
+            <div class="cc-guide-line" style="top:8%"></div>
+            <div class="cc-guide-line" style="top:14%"></div>
+            <div class="cc-guide-line" style="bottom:20%"></div>
+            <div class="cc-guide-label" style="top:8%">Safe zone top</div>
+            <div class="cc-guide-label" style="bottom:20%">Comments area</div>
+          </div>
+        </div>
+
+        <!-- Transport Bar -->
+        <div class="cc-transport-bar">
+          <button class="cc-transport-btn" data-act="cc_step" data-sec="-5" title="Back 5s">⏮</button>
+          <button class="cc-transport-btn" data-act="cc_step" data-sec="-1" title="Back 1s">◀</button>
+          <button class="cc-transport-btn cc-play-btn" id="ccPlayBtn" data-act="cc_playpause" title="Play/Pause">▶</button>
+          <button class="cc-transport-btn" data-act="cc_step" data-sec="1" title="Fwd 1s">▶</button>
+          <button class="cc-transport-btn" data-act="cc_step" data-sec="5" title="Fwd 5s">⏭</button>
+          <span class="cc-timecode-display" id="ccTimecodeDisplay">0:00.0</span>
+          <div class="cc-speed-group">
+            ${[0.5, 1, 1.5, 2].map(r => `<button class="cc-speed-btn ${r===1?'active':''}" data-act="cc_speed" data-rate="${r}">${r}x</button>`).join('')}
+          </div>
+          <button class="cc-transport-btn ${TL_STATE.isMuted ? 'active' : ''}" data-act="cc_mute" title="Mute">🔇</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- TIMELINE SECTION -->
+    <div class="cc-timeline-section">
+      <!-- Timeline Toolbar -->
+      <div class="cc-tl-toolbar">
+        <button class="cc-tl-tool-btn" data-act="cc_zoom" data-delta="-0.25" title="Zoom out">🔍−</button>
+        <input type="range" id="ccZoomSlider" min="0.2" max="6" step="0.1" value="${TL_STATE.zoom}" style="width:80px;accent-color:#00e5ff">
+        <button class="cc-tl-tool-btn" data-act="cc_zoom" data-delta="0.25" title="Zoom in">🔍+</button>
+        <div class="cc-tl-sep"></div>
+        <button class="cc-tl-tool-btn" data-act="cc_add_clip" title="Add Clip">＋ Clip</button>
+        <button class="cc-tl-tool-btn" data-act="cc_split" title="Split at playhead">✂️ Split</button>
+        <button class="cc-tl-tool-btn" data-act="cc_del_clip" title="Delete">🗑</button>
+        <div class="cc-tl-sep"></div>
+        <button class="cc-tl-tool-btn" data-act="cc_undo" title="Undo">↩</button>
+        <button class="cc-tl-tool-btn" data-act="cc_redo" title="Redo">↪</button>
+        <span style="margin-left:auto;font-size:11px;color:#888">${TL_STATE.clips.length} clip${TL_STATE.clips.length===1?'':'s'} · ${fmtTimecode(TL_STATE.duration)} source</span>
+      </div>
+
+      <!-- Tracks Layout -->
+      <div class="cc-tracks-layout">
+        <!-- Track Headers -->
+        <div class="cc-track-headers">
+          <div class="cc-track-header-cell" style="height:24px;border-bottom:1px solid #333">⏱ Ruler</div>
+          <div class="cc-track-header-cell">🎬 Video</div>
+          <div class="cc-track-header-cell">💬 Captions</div>
+          <div class="cc-track-header-cell">🎯 Hooks</div>
+        </div>
+
+        <!-- Tracks Viewport -->
+        <div class="cc-tracks-viewport" id="ccTracksViewport">
+          <div class="cc-track-scroll-inner" style="width:${totalW}px">
+            <!-- Ruler -->
+            <div class="cc-ruler-track" style="width:${totalW}px">
+              ${rulerHtml}
+            </div>
+            <!-- Video Track Lane -->
+            <div class="cc-track-lane" id="ccVideoTrack" style="width:${totalW}px">
+              ${videoTrackHtml}
+            </div>
+            <!-- Caption Track Lane -->
+            <div class="cc-track-lane cc-caption-lane" style="width:${totalW}px">
+              ${captionTrackHtml}
+            </div>
+            <!-- Hook Track Lane -->
+            <div class="cc-track-lane cc-hook-lane" style="width:${totalW}px">
+              ${hookTrackHtml}
+            </div>
+            <!-- Playhead -->
+            <div class="cc-playhead-line" id="ccPlayhead" style="left:0px">
+              <div class="cc-playhead-head" id="ccPlayheadHead">▼</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Status Bar -->
+      <div class="cc-status-bar">
+        <span>🎬 ${TL_STATE.clips.length} clips</span>
+        <span>⏱ ${fmtTimecode(TL_STATE.duration)} source</span>
+        <span style="color:#4caf50">⚡ GPU NVENC Active</span>
+        <span style="margin-left:auto;color:#00e5ff">CapForge Studio v2.0</span>
+      </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="cc-loading-overlay" id="ccLoadingOverlay" style="display:none">
+      <div class="cc-spinner"></div>
+      <div style="color:#fff;margin-top:16px;font-size:16px">Re-rendering clips with GPU…</div>
+      <div style="color:#888;font-size:12px;margin-top:4px">This may take a minute. Please wait.</div>
+    </div>
+  </div>`;
+
+  attachCapCutEvents();
+}
+
+/* ---- Event attachment ---- */
+function attachCapCutEvents() {
+  /* Video timeupdate → playhead + timecode */
+  const vid = document.getElementById("ccVideo");
+  if (vid) {
+    vid.volume = TL_STATE.volume;
+    vid.muted = TL_STATE.isMuted;
+    vid.loop = TL_STATE.isLooping;
+
+    vid.addEventListener("timeupdate", () => {
+      const t = vid.currentTime;
+      const pxPerSec = 60 * TL_STATE.zoom;
+      const ph = document.getElementById("ccPlayhead");
+      if (ph) ph.style.left = (t * pxPerSec) + "px";
+      const tc = document.getElementById("ccTimecodeDisplay");
+      if (tc) tc.textContent = fmtTimecode(t);
+    });
+
+    vid.addEventListener("play", () => {
+      TL_STATE.isPlaying = true;
+      const btn = document.getElementById("ccPlayBtn");
+      if (btn) btn.textContent = "⏸";
+    });
+    vid.addEventListener("pause", () => {
+      TL_STATE.isPlaying = false;
+      const btn = document.getElementById("ccPlayBtn");
+      if (btn) btn.textContent = "▶";
+    });
+    vid.addEventListener("ended", () => {
+      if (!TL_STATE.isLooping) vid.currentTime = 0;
+    });
+  }
+
+  /* Zoom slider */
+  const zoomSlider = document.getElementById("ccZoomSlider");
+  if (zoomSlider) {
+    zoomSlider.addEventListener("input", () => {
+      TL_STATE.zoom = parseFloat(zoomSlider.value);
+      ccRefreshTracks();
+    });
+  }
+
+  /* Tracks viewport click → seek */
+  const viewport = document.getElementById("ccTracksViewport");
+  if (viewport) {
+    viewport.addEventListener("click", (e) => {
+      if (e.target.closest("[data-act]")) return;
+      const rect = viewport.getBoundingClientRect();
+      const scrollLeft = viewport.scrollLeft;
+      const relX = e.clientX - rect.left + scrollLeft;
+      const pxPerSec = 60 * TL_STATE.zoom;
+      const seekTime = Math.max(0, Math.min(TL_STATE.duration, relX / pxPerSec));
+      const v = document.getElementById("ccVideo");
+      if (v) v.currentTime = seekTime;
+    });
+
+    /* Trim handle drag */
+    viewport.addEventListener("pointerdown", (e) => {
+      const handle = e.target.closest(".cc-clip-trim-handle");
+      if (handle) {
+        e.preventDefault();
+        const idx = parseInt(handle.closest("[data-idx]").dataset.idx);
+        const side = handle.dataset.side;
+        ccSaveUndo();
+        TL_STATE.dragTarget = { type: "trim", idx, side };
+      } else {
+        const clipEl = e.target.closest(".cc-video-clip");
+        if (!clipEl) return;
+        e.preventDefault();
+        const idx = parseInt(clipEl.dataset.idx);
+        const clip = TL_STATE.clips[idx];
+        if (!clip) return;
+        ccSaveUndo();
+        TL_STATE.dragTarget = { type: "move", idx, originStart: clip.start, originEnd: clip.end, grabX: e.clientX };
+        ccSelectClip(idx);
+      }
+      viewport.setPointerCapture(e.pointerId);
+    });
+
+    viewport.addEventListener("pointermove", (e) => {
+      if (!TL_STATE.dragTarget) return;
+      const rect = viewport.getBoundingClientRect();
+      const scrollLeft = viewport.scrollLeft;
+      const relX = e.clientX - rect.left + scrollLeft;
+      const pxPerSec = 60 * TL_STATE.zoom;
+      const t = Math.max(0, Math.min(TL_STATE.duration, relX / pxPerSec));
+      const { type, idx, side } = TL_STATE.dragTarget;
+      if (type === "trim") {
+        const c = TL_STATE.clips[idx];
+        if (!c) return;
+        if (side === "start") {
+          c.start = framesToSec(secToFrames(Math.min(t, c.end - 3)));
+        } else {
+          c.end = framesToSec(secToFrames(Math.max(t, c.start + 3)));
+        }
+        ccRefreshTracks();
+      } else if (type === "move") {
+        const c = TL_STATE.clips[idx];
+        if (!c) return;
+        const deltaSec = (e.clientX - TL_STATE.dragTarget.grabX) / (60 * TL_STATE.zoom);
+        const duration = TL_STATE.dragTarget.originEnd - TL_STATE.dragTarget.originStart;
+        const newStart = framesToSec(secToFrames(Math.max(0, Math.min(TL_STATE.duration - duration, TL_STATE.dragTarget.originStart + deltaSec))));
+        c.start = newStart;
+        c.end = newStart + duration;
+        ccRefreshTracks();
+      }
+    });
+
+    viewport.addEventListener("pointerup", () => {
+      if (TL_STATE.dragTarget) {
+        TL_STATE.dragTarget = null;
+        ccRefreshInspector();
+      }
+    });
+  }
+
+  /* Inspector live inputs */
+  const inspector = document.getElementById("ccInspector");
+  if (inspector) {
+    inspector.addEventListener("input", (e) => {
+      const field = e.target.dataset.field;
+      if (!field) return;
+      const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+      if (!clip) return;
+      const val = e.target.type === "checkbox" ? e.target.checked : (e.target.type === "range" ? parseFloat(e.target.value) : e.target.value);
+      clip[field] = val;
+      ccMarkDirty();
+
+      /* Live number display for sliders */
+      if (field === "top_padding") {
+        const el = document.getElementById("ccTopPadNum");
+        if (el) el.textContent = val;
+      }
+      if (field === "bottom_padding") {
+        const el = document.getElementById("ccBotPadNum");
+        if (el) el.textContent = val;
+      }
+      if (field === "canvas_top_space") {
+        const el = document.getElementById("ccCtsNum");
+        if (el) el.textContent = val;
+      }
+
+      /* Live banner update */
+      if (field === "hook") {
+        const banner = document.getElementById("ccBannerOverlay");
+        if (banner) {
+          banner.style.display = val ? "" : "none";
+          banner.textContent = val;
+        }
+      }
+    });
+
+    inspector.addEventListener("change", (e) => {
+      const field = e.target.dataset.field;
+      if (!field) return;
+      const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+      if (!clip) return;
+      const val = e.target.type === "checkbox" ? e.target.checked : e.target.value;
+      clip[field] = val;
+      /* Refresh style chips */
+      if (field === "subtitle_style" || field === "hook_style") {
+        ccRefreshInspector();
+      }
+    });
+
+    /* Volume slider live */
+    inspector.addEventListener("input", (e) => {
+      if (e.target.id === "ccVolSlider") {
+        TL_STATE.volume = parseFloat(e.target.value);
+        const v = document.getElementById("ccVideo");
+        if (v) v.volume = TL_STATE.volume;
+      }
+      if (e.target.id === "ccMuteToggle") {
+        TL_STATE.isMuted = e.target.checked;
+        const v = document.getElementById("ccVideo");
+        if (v) v.muted = TL_STATE.isMuted;
+      }
+    });
+  }
+
+  /* Playhead drag */
+  const phHead = document.getElementById("ccPlayheadHead");
+  if (phHead && viewport) {
+    phHead.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      TL_STATE.dragTarget = { type: "playhead" };
+      viewport.setPointerCapture(e.pointerId);
+    });
+  }
+}
+
+/* ---- Partial refresh helpers ---- */
+function ccRefreshTracks() {
+  const { rulerHtml, videoTrackHtml, captionTrackHtml, hookTrackHtml, totalW } = buildTracksHtml();
+  const ruler = document.querySelector(".cc-ruler-track");
+  const videoTrack = document.getElementById("ccVideoTrack");
+  const captionTrack = document.querySelector(".cc-caption-lane");
+  const hookTrack = document.querySelector(".cc-hook-lane");
+  const scrollInner = document.querySelector(".cc-track-scroll-inner");
+
+  if (scrollInner) scrollInner.style.width = totalW + "px";
+  if (ruler) { ruler.innerHTML = rulerHtml; ruler.style.width = totalW + "px"; }
+  if (videoTrack) { videoTrack.innerHTML = videoTrackHtml; videoTrack.style.width = totalW + "px"; }
+  if (captionTrack) { captionTrack.innerHTML = captionTrackHtml; captionTrack.style.width = totalW + "px"; }
+  if (hookTrack) { hookTrack.innerHTML = hookTrackHtml; hookTrack.style.width = totalW + "px"; }
+
+  /* Update playhead position */
+  const v = document.getElementById("ccVideo");
+  if (v) {
+    const pxPerSec = 60 * TL_STATE.zoom;
+    const ph = document.getElementById("ccPlayhead");
+    if (ph) ph.style.left = (v.currentTime * pxPerSec) + "px";
+  }
+}
+
+function ccRefreshInspector() {
+  const insp = document.getElementById("ccInspector");
+  if (insp) {
+    insp.innerHTML = renderSubInspector(TL_STATE.activeTab);
+    /* Re-attach inspector events by calling attachCapCutEvents which is idempotent for inspector */
+    const inspector = document.getElementById("ccInspector");
+    if (inspector) {
+      inspector.addEventListener("input", (e) => {
+        const field = e.target.dataset.field;
+        if (!field) return;
+        const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+        if (!clip) return;
+        const val = e.target.type === "checkbox" ? e.target.checked : (e.target.type === "range" ? parseFloat(e.target.value) : e.target.value);
+        clip[field] = val;
+        if (field === "top_padding") { const el = document.getElementById("ccTopPadNum"); if (el) el.textContent = val; }
+        if (field === "bottom_padding") { const el = document.getElementById("ccBotPadNum"); if (el) el.textContent = val; }
+        if (field === "canvas_top_space") { const el = document.getElementById("ccCtsNum"); if (el) el.textContent = val; }
+        if (field === "hook") { const b = document.getElementById("ccBannerOverlay"); if (b) { b.style.display = val ? "" : "none"; b.textContent = val; } }
+      });
+      inspector.addEventListener("change", (e) => {
+        const field = e.target.dataset.field;
+        if (!field) return;
+        const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+        if (!clip) return;
+        clip[field] = e.target.type === "checkbox" ? e.target.checked : e.target.value;
+        ccMarkDirty();
+        if (field === "subtitle_style" || field === "hook_style") ccRefreshInspector();
+      });
+    }
+  }
+}
+
+function ccSelectClip(idx) {
+  if (idx < 0 || idx >= TL_STATE.clips.length) return;
+  TL_STATE.activeClipIdx = idx;
+  const clip = TL_STATE.clips[idx];
+  const v = document.getElementById("ccVideo");
+  if (v && clip) v.currentTime = clip.start;
+  /* Update banner */
+  const banner = document.getElementById("ccBannerOverlay");
+  if (banner && clip) {
+    banner.style.display = clip.hook ? "" : "none";
+    banner.textContent = clip.hook || "";
+  }
+  ccRefreshTracks();
+  ccRefreshInspector();
+}
+
+function ccSplitAtPlayhead() {
+  const v = document.getElementById("ccVideo");
+  if (!v) return;
+  const t = v.currentTime;
+  const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+  if (!clip) return;
+  if (t <= clip.start + 2 || t >= clip.end - 2) {
+    toast("Playhead must be at least 2s inside the clip to split", "bad");
+    return;
+  }
+  ccSaveUndo();
+  t = framesToSec(secToFrames(t));
+  const newClip = {
+    ...clip,
+    id: `clip_${Date.now()}`,
+    start: t,
+    end: clip.end,
+    title: clip.title + " (B)"
+  };
+  clip.end = t;
+  TL_STATE.clips.splice(TL_STATE.activeClipIdx + 1, 0, newClip);
+  toast("Clip split at " + fmtTimecode(t), "ok");
+  ccRefreshTracks();
+  ccRefreshInspector();
+}
+
+function ccDeleteActiveClip() {
+  if (TL_STATE.clips.length <= 1) {
+    toast("Cannot delete the only clip", "bad");
+    return;
+  }
+  ccSaveUndo();
+  TL_STATE.clips.splice(TL_STATE.activeClipIdx, 1);
+  TL_STATE.activeClipIdx = Math.min(TL_STATE.activeClipIdx, TL_STATE.clips.length - 1);
+  toast("Clip removed", "ok");
+  ccRefreshTracks();
+  ccRefreshInspector();
+}
+
+function ccAddClipAtPlayhead() {
+  const v = document.getElementById("ccVideo");
+  const t = v ? v.currentTime : 0;
+  ccSaveUndo();
+  const newStart = Math.max(0, t);
+  const newEnd = Math.min(TL_STATE.duration, newStart + 45);
+  TL_STATE.clips.push({
+    id: `clip_${Date.now()}`,
+    start: newStart,
+    end: newEnd,
+    title: `Clip ${TL_STATE.clips.length + 1}`,
+    hook: "",
+    subtitle_style: "hormozi",
+    layout_mode: "speaker_focus",
+    top_padding: 0,
+    bottom_padding: 0,
+    canvas_top_space: 450,
+    virality_score: 85
+  });
+  TL_STATE.activeClipIdx = TL_STATE.clips.length - 1;
+  toast("New clip added", "ok");
+  ccRefreshTracks();
+  ccRefreshInspector();
+}
+
+function ccAdjBound(type, delta) {
+  const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+  if (!clip) return;
+  ccSaveUndo();
+  const d = Number(delta);
+  if (type === "start") {
+    clip.start = Math.max(0, Math.min(clip.end - 3, clip.start + d));
+  } else {
+    clip.end = Math.max(clip.start + 3, Math.min(TL_STATE.duration, clip.end + d));
+  }
+  ccRefreshTracks();
+  ccRefreshInspector();
+}
+
+function ccSetBoundToPlayhead(type) {
+  const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+  const v = document.getElementById("ccVideo");
+  if (!clip || !v) return;
+  ccSaveUndo();
+  const t = v.currentTime;
+  if (type === "start") {
+    clip.start = Math.max(0, Math.min(clip.end - 3, t));
+  } else {
+    clip.end = Math.max(clip.start + 3, Math.min(TL_STATE.duration, t));
+  }
+  toast(`Clip ${type} set to ${fmtTimecode(t)}`, "ok");
+  ccRefreshTracks();
+  ccRefreshInspector();
+}
+
+async function applyCapCutEdits() {
+  if (!TL_STATE.clips || TL_STATE.clips.length === 0) {
+    toast("Please add at least 1 clip before applying", "bad");
+    return;
+  }
+  for (let i = 0; i < TL_STATE.clips.length; i++) {
+    const c = TL_STATE.clips[i];
+    if (c.end <= c.start || (c.end - c.start) < 3.0) {
+      toast(`Clip ${i + 1} duration must be at least 3 seconds`, "bad");
+      ccSelectClip(i);
+      return;
+    }
+  }
+
+  const overlay = document.getElementById("ccLoadingOverlay");
+  if (overlay) overlay.style.display = "flex";
+
+  try {
+    toast("Re-rendering clips with AI Safe Framing & Kinetic Subtitles…", "loading", "Studio");
+    const res = await api(`/api/projects/${TL_STATE.projectId}/apply-timeline-edits`, {
+      method: "POST",
+      body: JSON.stringify({
+        clips: TL_STATE.clips,
+        editor_project: buildEditorProject()
+      })
+    });
+
+    if (res && res.status === "success") {
+      toast("✨ All timeline clips re-rendered successfully!", "ok", "Studio Complete");
+      await tick();
+      const dlg = $("#timelinedlg");
+      if (dlg) dlg.close();
+      const v = document.getElementById("ccVideo");
+      if (v) v.pause();
+      render();
+    } else {
+      throw new Error(res?.detail || "Failed to apply timeline edits");
+    }
+  } catch (err) {
+    console.error("Apply CapCut Edits Error:", err);
+    toast("Rendering error: " + (err.message || err), "bad");
+    if (overlay) overlay.style.display = "none";
+  }
+}
+
+/* ---- Undo/Redo ---- */
+function ccUndo() {
+  if (!TL_STATE._undoStack.length) { toast("Nothing to undo", "bad"); return; }
+  TL_STATE._redoStack.push(JSON.stringify(TL_STATE.clips));
+  TL_STATE.clips = JSON.parse(TL_STATE._undoStack.pop());
+  TL_STATE.activeClipIdx = Math.min(TL_STATE.activeClipIdx, TL_STATE.clips.length - 1);
+  ccRefreshTracks();
+  ccRefreshInspector();
+  toast("Undo", "ok");
+}
+
+function ccRedo() {
+  if (!TL_STATE._redoStack.length) { toast("Nothing to redo", "bad"); return; }
+  TL_STATE._undoStack.push(JSON.stringify(TL_STATE.clips));
+  TL_STATE.clips = JSON.parse(TL_STATE._redoStack.pop());
+  TL_STATE.activeClipIdx = Math.min(TL_STATE.activeClipIdx, TL_STATE.clips.length - 1);
+  ccRefreshTracks();
+  ccRefreshInspector();
+  toast("Redo", "ok");
+}
+
+document.addEventListener("input", (e) => {
+  if (e.target?.id === "ccProjectTitle") ccMarkDirty();
+});
+
+document.addEventListener("keydown", (e) => {
+  const dlg = document.getElementById("timelinedlg");
+  if (!dlg || !dlg.open) return;
+  const tag = e.target?.tagName?.toLowerCase();
+  const isTyping = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
+  if (isTyping) {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      ccSaveEditorProject(true);
+    }
+    return;
+  }
+
+  if (e.code === "Space") {
+    e.preventDefault();
+    document.querySelector("[data-act='cc_playpause']")?.click();
+  } else if (e.key.toLowerCase() === "s" && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    ccSplitAtPlayhead();
+  } else if (e.key === "Delete" || e.key === "Backspace") {
+    e.preventDefault();
+    ccDeleteActiveClip();
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+    e.preventDefault();
+    e.shiftKey ? ccRedo() : ccUndo();
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLower() === "y") {
+    e.preventDefault();
+    ccRedo();
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+    e.preventDefault();
+    ccSaveEditorProject(true);
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+    const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+    if (clip) TL_STATE.clipboard = JSON.parse(JSON.stringify(clip));
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v" && TL_STATE.clipboard) {
+    e.preventDefault();
+    ccSaveUndo();
+    const copy = JSON.parse(JSON.stringify(TL_STATE.clipboard));
+    copy.id = `clip_${Date.now()}`;
+    copy.start = Math.min(TL_STATE.duration - 3, copy.start + (copy.end - copy.start));
+    copy.end = Math.min(TL_STATE.duration, copy.start + (TL_STATE.clipboard.end - TL_STATE.clipboard.start));
+    TL_STATE.clips.push(copy);
+    TL_STATE.activeClipIdx = TL_STATE.clips.length - 1;
+    ccRefreshTracks();
+    ccRefreshInspector();
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
+    e.preventDefault();
+    const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+    if (clip) {
+      ccSaveUndo();
+      const copy = JSON.parse(JSON.stringify(clip));
+      copy.id = `clip_${Date.now()}`;
+      copy.start = Math.min(TL_STATE.duration - 3, copy.start + (copy.end - copy.start));
+      copy.end = Math.min(TL_STATE.duration, copy.start + (clip.end - clip.start));
+      TL_STATE.clips.push(copy);
+      TL_STATE.activeClipIdx = TL_STATE.clips.length - 1;
+      ccRefreshTracks();
+      ccRefreshInspector();
+    }
+  } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    const v = document.getElementById("ccVideo");
+    if (!v) return;
+    e.preventDefault();
+    const delta = e.shiftKey ? 5 : 1 / TL_STATE.fps;
+    v.currentTime = Math.max(0, Math.min(TL_STATE.duration, v.currentTime + (e.key === "ArrowRight" ? delta : -delta)));
+  }
+});
+
 /* ============================================================ Event Handlers */
 document.addEventListener("click", async e => {
   const b = e.target.closest("[data-act]");
@@ -1916,6 +3088,113 @@ document.addEventListener("click", async e => {
   if (a === "clearfile") { DRAFT.file = null; drawAtt(); return; }
   if (a === "openclip") { openClip(d.j, d.c); return; }
   if (a === "closedlg") { $("#clipdlg").close(); return; }
+  if (a === "openeditor") { openTimelineEditor(d.j); return; }
+  if (a === "closetimeline") {
+    const dlg = $("#timelinedlg");
+    if (dlg) dlg.close();
+    const v = document.getElementById("ccVideo");
+    if (v) v.pause();
+    return;
+  }
+  if (a === "cc_playpause") {
+    const v = document.getElementById("ccVideo");
+    if (v) { if (v.paused) v.play(); else v.pause(); }
+    return;
+  }
+  if (a === "cc_step") {
+    const v = document.getElementById("ccVideo");
+    if (v) v.currentTime = Math.max(0, Math.min(TL_STATE.duration, (v.currentTime || 0) + Number(d.sec || 0)));
+    return;
+  }
+  if (a === "cc_speed") {
+    const rate = Number(d.rate || 1);
+    const v = document.getElementById("ccVideo");
+    if (v) v.playbackRate = rate;
+    document.querySelectorAll("[data-act='cc_speed']").forEach(btn => {
+      btn.classList.toggle("active", Number(btn.dataset.rate) === rate);
+    });
+    return;
+  }
+  if (a === "cc_loop") {
+    TL_STATE.isLooping = !TL_STATE.isLooping;
+    const v = document.getElementById("ccVideo");
+    if (v) v.loop = TL_STATE.isLooping;
+    b.classList.toggle("active", TL_STATE.isLooping);
+    return;
+  }
+  if (a === "cc_mute") {
+    TL_STATE.isMuted = !TL_STATE.isMuted;
+    const v = document.getElementById("ccVideo");
+    if (v) v.muted = TL_STATE.isMuted;
+    b.classList.toggle("active", TL_STATE.isMuted);
+    return;
+  }
+  if (a === "cc_tiktok_guides") {
+    TL_STATE.showTikTokGuides = !TL_STATE.showTikTokGuides;
+    const guides = document.getElementById("ccTikTokGuides");
+    if (guides) guides.style.display = TL_STATE.showTikTokGuides ? "" : "none";
+    b.classList.toggle("active", TL_STATE.showTikTokGuides);
+    return;
+  }
+  if (a === "cc_zoom") {
+    TL_STATE.zoom = Math.max(0.2, Math.min(8.0, TL_STATE.zoom + Number(d.delta || 0)));
+    const slider = document.getElementById("ccZoomSlider");
+    if (slider) slider.value = TL_STATE.zoom;
+    ccRefreshTracks();
+    return;
+  }
+  if (a === "cc_dock") {
+    TL_STATE.activeTab = d.tab;
+    document.querySelectorAll(".cc-dock-btn").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === d.tab));
+    ccRefreshInspector();
+    return;
+  }
+  if (a === "cc_select_clip") {
+    ccSelectClip(Number(d.idx));
+    return;
+  }
+  if (a === "cc_del_clip") {
+    e.stopPropagation();
+    ccDeleteActiveClip();
+    return;
+  }
+  if (a === "cc_add_clip") {
+    ccAddClipAtPlayhead();
+    return;
+  }
+  if (a === "cc_split") {
+    ccSplitAtPlayhead();
+    return;
+  }
+  if (a === "cc_set_bound_playhead") {
+    ccSetBoundToPlayhead(d.type);
+    return;
+  }
+  if (a === "cc_adj_bound") {
+    ccAdjBound(d.type, d.delta);
+    return;
+  }
+  if (a === "cc_apply") {
+    applyCapCutEdits();
+    return;
+  }
+  if (a === "cc_save") {
+    ccSaveEditorProject(true);
+    return;
+  }
+  if (a === "cc_undo") {
+    ccUndo();
+    return;
+  }
+  if (a === "cc_redo") {
+    ccRedo();
+    return;
+  }
+  if (a === "cc_cover_color") {
+    const clip = TL_STATE.clips[TL_STATE.activeClipIdx];
+    if (clip) { clip.cover_color = d.color; toast("Cover color set", "ok"); }
+    return;
+  }
   if (a === "togglebrief") {
     if (S.expandedBriefs.has(d.j)) S.expandedBriefs.delete(d.j);
     else S.expandedBriefs.add(d.j);
@@ -2056,6 +3335,92 @@ document.addEventListener("click", async e => {
     tick();
     return;
   }
+  if (a === "switchcardthumb") {
+    const card = b.closest(".clip");
+    if (card) {
+      const img = card.querySelector(".shot img");
+      if (img && d.src) {
+        img.src = d.src;
+      }
+      card.querySelectorAll(".thumb-pill-btn").forEach(btn => {
+        btn.classList.toggle("active", btn === b);
+      });
+      const dlLink = card.querySelector(".card-thumb-dl");
+      if (dlLink && d.src) {
+        dlLink.href = d.src;
+        if (d.cov) dlLink.download = d.cov.split('/').pop();
+      }
+    }
+    return;
+  }
+  if (a === "setdefaultcover") {
+    const cid = d.c || D.cid;
+    const cov = d.cov;
+    const src = d.src;
+    if (!cid || !cov) return;
+    b.disabled = true;
+    try {
+      toast("Updating active TikTok cover...", "loading", "Cover Studio");
+      const res = await send(`/api/clips/${cid}/set-cover`, { cover: cov });
+      if (res && res.status === "success") {
+        toast("✨ Active cover thumbnail set!", "ok", "Cover Updated");
+        for (const job of S.jobs) {
+          const cl = (job.clips || []).find(x => x.id === cid);
+          if (cl) {
+            cl.cover = cov;
+          }
+        }
+        const stageImg = $("#editorThumbImg");
+        if (stageImg && src) stageImg.src = src;
+        const thumbBtn = $("#ed_thumb_btn");
+        if (thumbBtn && src) {
+          thumbBtn.href = src;
+          thumbBtn.download = cov.split('/').pop();
+        }
+        const cardImg = document.querySelector(`button[data-c="${cid}"] img`);
+        if (cardImg && src) cardImg.src = src;
+        const card = cardImg?.closest(".clip");
+        if (card) {
+          card.querySelectorAll(".thumb-pill-btn").forEach(btn => {
+            btn.classList.toggle("active", btn.dataset.cov === cov);
+          });
+          const dlLink = card.querySelector(".card-thumb-dl");
+          if (dlLink && src) {
+            dlLink.href = src;
+            dlLink.download = cov.split('/').pop();
+          }
+        }
+        const pane = $("#pane_modaltab_cover");
+        if (pane) {
+          pane.querySelectorAll(".cover-card-box").forEach(box => {
+            const btn = box.querySelector('[data-act="setdefaultcover"]');
+            const isActive = btn && btn.dataset.cov === cov;
+            box.classList.toggle("is-active-cover", isActive);
+            let pill = box.querySelector(".active-cover-pill");
+            if (isActive) {
+              if (!pill) {
+                pill = document.createElement("span");
+                pill.className = "active-cover-pill";
+                pill.textContent = "✓ ACTIVE";
+                box.querySelector(".cover-card-preview")?.appendChild(pill);
+              }
+            } else if (pill) {
+              pill.remove();
+            }
+            if (btn) {
+              btn.className = `btn sm ${isActive ? 'ghost disabled' : 'primary-soft'}`;
+              btn.textContent = isActive ? '✓ Active' : 'Set Active';
+            }
+          });
+        }
+      }
+    } catch (err) {
+      toast("Error setting cover: " + (err.message || err), "bad", "Cover Studio");
+    } finally {
+      b.disabled = false;
+    }
+    return;
+  }
   if (a === "dlall") {
     const ids = (S.jobs.find(x => x.id === d.j)?.clips || []).map(c => d.j + "." + c.id);
     window.location.href = "/api/clips.zip?ids=" + encodeURIComponent(ids.join(","));
@@ -2084,9 +3449,16 @@ document.addEventListener("click", async e => {
     const clipIds = [];
     for (const key of S.sel) {
       const p = key.split(":");
-      if (p[0] === "c") clipIds.push(`${p[1]}.${p[2]}`);
+      if (p[0] === "c") {
+        clipIds.push(`${p[1]}.${p[2]}`);
+      } else if (p[0] === "j") {
+        const job = S.jobs.find(x => x.id === p[1]);
+        if (job && job.clips) {
+          job.clips.forEach(c => clipIds.push(`${job.id}.${c.id}`));
+        }
+      }
     }
-    if (!clipIds.length) { toast("No individual clips selected", "bad"); return; }
+    if (!clipIds.length) { toast("No clips selected", "bad"); return; }
     window.location.href = "/api/clips.zip?ids=" + encodeURIComponent(clipIds.join(","));
     toast(`Downloading ${clipIds.length} clips ZIP...`, "ok");
     return;
@@ -2711,6 +4083,110 @@ document.addEventListener("click", async e => {
     if (t) t.value = "THE UNTOLD TRUTH ABOUT " + (t.value || "SUCCESS").toUpperCase();
     if (dsc) dsc.value = "Watch this before it gets taken down. Key breakdown from the full podcast.";
     toast("Rewritten with viral high-retention copy", "ok");
+    return;
+  }
+  if (a === "runcopilot" || a === "copilotpreset") {
+    let instruction = "";
+    if (a === "copilotpreset") {
+      const p = d.preset;
+      const presets = {
+        sharpen_hook: "Sharpen the hook for peak curiosity and scroll-stopping retention",
+        add_controversy: "Make headline and hook controversial to spark comment debates",
+        focus_wealth: "Re-angle headline and hook towards wealth, business, and financial success",
+        mrbeast_hype: "Use high energy MrBeast neon subtitles and fast paced headline",
+        clean_editorial: "Use clean minimal editorial caption style with balanced contrast"
+      };
+      instruction = presets[p] || p;
+      if ($("#ai_copilot_prompt")) $("#ai_copilot_prompt").value = instruction;
+    } else {
+      instruction = $("#ai_copilot_prompt")?.value?.trim() || "";
+    }
+    if (!instruction) {
+      toast("Please enter an edit instruction or choose a preset chip.", "info");
+      return;
+    }
+
+    b.disabled = true;
+    toast("AI Video Copilot analyzing clip and applying edits...", "loading", "AI Copilot");
+    try {
+      const res = await send("/api/ai/edit-copilot", {
+        clip_id: D.cid,
+        instruction,
+        current_state: {
+          title: $("#ed_title")?.value || "",
+          hook: $("#ed_hook")?.value || "",
+          subtitle_style: $("#ed_style")?.value || "hormozi",
+          layout_mode: $("#ed_layout")?.value || "fit_canvas"
+        }
+      });
+      if (res && res.edits) {
+        const ed = res.edits;
+        if (ed.updated_title && $("#ed_title")) $("#ed_title").value = ed.updated_title;
+        if (ed.updated_hook && $("#ed_hook")) $("#ed_hook").value = ed.updated_hook;
+        if (ed.suggested_subtitle_style && $("#ed_style")) $("#ed_style").value = ed.suggested_subtitle_style;
+        if (ed.suggested_layout && $("#ed_layout")) $("#ed_layout").value = ed.suggested_layout;
+        if (ed.hashtags && $("#ed_tags")) $("#ed_tags").value = ed.hashtags.join(" ");
+
+        toast(`✨ AI Copilot: ${ed.explanation || 'Applied optimizations'}`, "ok", "Edit Applied");
+      }
+    } catch (err) {
+      toast("Copilot error: " + (err.message || err), "bad", "AI Copilot");
+    } finally {
+      b.disabled = false;
+    }
+    return;
+  }
+  if (a === "gensocialkit") {
+    b.disabled = true;
+    toast("Generating multi-platform publishing kit (TikTok, Reels, Shorts)...", "loading", "Social Kit");
+    try {
+      const res = await send("/api/ai/social-kit", {
+        clip_id: D.cid,
+        title: $("#ed_title")?.value || "",
+        hook: $("#ed_hook")?.value || "",
+        transcript: D.activeWords ? D.activeWords.map(w => w.word).join(" ") : ""
+      });
+      const box = $("#social_kit_rendered_box");
+      if (box && res.social_kit) {
+        const sk = res.social_kit;
+        box.innerHTML = `
+          <div class="social-platform-card">
+            <div class="social-card-head">
+              <h4>📱 TikTok Post</h4>
+              <button type="button" class="btn sm" data-act="copysocialtext" data-text="${esc(sk.tiktok?.caption + '\n\n' + (sk.tiktok?.hashtags || []).join(' '))}">${ic("copy")} Copy</button>
+            </div>
+            <div class="social-text-block">${esc(sk.tiktok?.caption || "")}\n\n${esc((sk.tiktok?.hashtags || []).join(" "))}</div>
+            <div style="font-size:11px;color:#A89C94"><b>SEO Keywords:</b> ${esc((sk.tiktok?.seo_keywords || []).join(", "))}</div>
+          </div>
+
+          <div class="social-platform-card">
+            <div class="social-card-head">
+              <h4>📸 Instagram Reels</h4>
+              <button type="button" class="btn sm" data-act="copysocialtext" data-text="${esc(sk.instagram?.caption)}">${ic("copy")} Copy</button>
+            </div>
+            <div class="social-text-block">${esc(sk.instagram?.caption || "")}</div>
+          </div>
+
+          <div class="social-platform-card">
+            <div class="social-card-head">
+              <h4>🔴 YouTube Shorts</h4>
+              <button type="button" class="btn sm" data-act="copysocialtext" data-text="${esc(sk.youtube_shorts?.title + '\n\n' + sk.youtube_shorts?.description)}">${ic("copy")} Copy</button>
+            </div>
+            <div class="social-text-block"><b>${esc(sk.youtube_shorts?.title || "")}</b>\n\n${esc(sk.youtube_shorts?.description || "")}</div>
+          </div>
+        `;
+        toast("Generated publishing copy for all 3 platforms!", "ok", "Social Kit Ready");
+      }
+    } catch (err) {
+      toast("Error generating social kit: " + (err.message || err), "bad");
+    } finally {
+      b.disabled = false;
+    }
+    return;
+  }
+  if (a === "copysocialtext") {
+    await navigator.clipboard.writeText(d.text);
+    toast("Copied post text to clipboard!", "ok");
     return;
   }
   if (a === "findmodels") {

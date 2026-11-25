@@ -114,6 +114,7 @@ class ViralDetector:
             return []
 
         # If LLM is available and user wants highlights (with tight 7s timeout to prevent freezing)
+        initial_clips = []
         if clip_mode == "highlights" and self.check_ollama_alive() and sentences[-1]["end"] >= min_seconds:
             try:
                 if progress_cb:
@@ -124,9 +125,11 @@ class ViralDetector:
                         progress_cb("Snapping AI story moments to complete sentence boundaries...", 38.0)
                     llm_clips = self._snap_llm_clips(sentences, llm_clips, min_seconds, max_seconds)
                     if llm_clips:
-                        if progress_cb:
-                            progress_cb(f"Finalized {len(llm_clips)} complete viral clips from AI story arcs...", 41.0)
-                        return llm_clips
+                        if len(llm_clips) >= top_k:
+                            if progress_cb:
+                                progress_cb(f"Finalized {top_k} complete viral clips from AI story arcs...", 41.0)
+                            return llm_clips[:top_k]
+                        initial_clips = llm_clips
             except Exception as e:
                 print(f"[ViralDetector] LLM skipped ({e}), using instant Narrative Arc Engine.")
 
@@ -138,7 +141,14 @@ class ViralDetector:
         else:
             if progress_cb:
                 progress_cb("Scanning complete conversational thoughts & 60–90s sweet spot...", 36.0)
-            res = self._detect_viral_highlights(sentences, min_seconds, max_seconds, top_k, progress_cb=progress_cb)
+            res = self._detect_viral_highlights(
+                sentences,
+                min_seconds,
+                max_seconds,
+                top_k,
+                progress_cb=progress_cb,
+                initial_clips=initial_clips
+            )
 
         if progress_cb:
             progress_cb(f"Finalized {len(res)} complete high-retention viral clips...", 41.0)
@@ -322,14 +332,14 @@ class ViralDetector:
         min_seconds: float,
         max_seconds: float,
         top_k: int,
-        progress_cb: Optional[Any] = None
+        progress_cb: Optional[Any] = None,
+        initial_clips: Optional[List[Dict[str, Any]]] = None
     ) -> List[Dict[str, Any]]:
         """
         Mode 1: High-Retention Standalone Viral Clips.
         Ensures clips begin strictly on defined topic anchor starters (tracing back if needed)
         and resolve on definitive conclusions without cutting off mid-thought.
-        Prioritizes the 60 to 90 seconds sweet spot while allowing and including
-        longer complete stories up to max_seconds (e.g. 180s to 300s).
+        Guarantees that up to top_k non-overlapping clips are extracted when video duration allows.
         """
         candidates = []
         n = len(sentences)
@@ -501,7 +511,7 @@ class ViralDetector:
         sweet_candidates.sort(key=lambda x: x["virality_score"], reverse=True)
         long_candidates.sort(key=lambda x: x["virality_score"], reverse=True)
 
-        selected = []
+        selected = list(initial_clips or [])
 
         # If user allowed long clips (max_seconds >= 120s) and requested multiple clips (top_k >= 3),
         # allocate a balanced portfolio: mostly 60-90s sweet-spot clips, plus 1 or 2 top complete long stories!
@@ -525,16 +535,68 @@ class ViralDetector:
             if len(selected) >= top_k:
                 break
 
-        # 3. If still space, backfill from remaining sweet or long candidates
+        # 3. If still space, backfill from remaining candidates with standard threshold
         if len(selected) < top_k:
             all_remaining = sorted(candidates, key=lambda x: x["virality_score"], reverse=True)
             for cand in all_remaining:
-                if not any(is_overlapping(cand, s) for s in selected):
+                if not any(is_overlapping(cand, s, max_overlap_ratio=0.35) for s in selected):
                     selected.append(cand)
                 if len(selected) >= top_k:
                     break
 
-        return selected
+        # 4. If still space, backfill with relaxed overlap threshold (0.50)
+        if len(selected) < top_k:
+            all_remaining = sorted(candidates, key=lambda x: x["virality_score"], reverse=True)
+            for cand in all_remaining:
+                if not any(is_overlapping(cand, s, max_overlap_ratio=0.50) for s in selected):
+                    selected.append(cand)
+                if len(selected) >= top_k:
+                    break
+
+        # 5. Guaranteed timeline backfill: extract clips from uncovered regions of the video
+        if len(selected) < top_k and sentences:
+            target_dur = max(min_seconds, min(max_seconds, 60.0))
+            for idx_start in range(len(sentences)):
+                s_start = sentences[idx_start]
+                # Skip if start falls within an already chosen clip
+                if any(s["start"] - 2.0 <= s_start["start"] <= s["end"] - 10.0 for s in selected):
+                    continue
+
+                clip_sents = []
+                for idx_end in range(idx_start, len(sentences)):
+                    s_end = sentences[idx_end]
+                    clip_sents.append(s_end)
+                    curr_dur = s_end["end"] - s_start["start"]
+                    if curr_dur >= min_seconds:
+                        if curr_dur >= target_dur or idx_end == len(sentences) - 1 or s_end["text"].strip().endswith((".", "!", "?")):
+                            c_text = " ".join(s["text"] for s in clip_sents)
+                            topic_t = self._extract_topic_headline(c_text, clip_sents[0]["text"])
+                            new_clip = {
+                                "start": round(max(0.0, s_start["start"] - 0.15), 2),
+                                "end": round(s_end["end"] + 0.25, 2),
+                                "duration": round((s_end["end"] + 0.25) - max(0.0, s_start["start"] - 0.15), 2),
+                                "title": topic_t,
+                                "hook": clip_sents[0]["text"],
+                                "virality_score": 88,
+                                "narrative_breakdown": {
+                                    "hook_score": 88,
+                                    "story_score": 86,
+                                    "conclusion_score": 88
+                                },
+                                "full_transcript": c_text,
+                                "part_info": "",
+                                "series_id": "",
+                                "reason": "Complete conversational thought extracted from video timeline."
+                            }
+                            if not any(is_overlapping(new_clip, s, max_overlap_ratio=0.45) for s in selected):
+                                selected.append(new_clip)
+                            break
+                    if curr_dur > max_seconds:
+                        break
+                if len(selected) >= top_k:
+                    break
+
+        return selected[:top_k]
 
     def _detect_topic_parting(
         self,
@@ -919,6 +981,287 @@ Respond ONLY with a JSON array:
         from core.ollama_manager import OllamaManager
         ollama = OllamaManager.get_instance()
         return ollama.suggest_b_roll_moments(transcript)
+
+    def research_viral_clips(
+        self,
+        segments: List[Dict[str, Any]],
+        query: str = "",
+        archetype: str = "all",
+        min_seconds: float = 60.0,
+        max_seconds: float = 90.0,
+        top_k: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        AI-Powered Viral Clip Research Engine.
+        Allows creators to research specific topics, debates, or viral angles across
+        the entire transcript with multidimensional virality scoring (0-100).
+        """
+        if not segments:
+            return []
+
+        sentences = SemanticSentenceAligner.reconstruct_sentences(segments)
+        if not sentences:
+            return []
+
+        # 1. If Ollama is active, query LLM for semantic narrative retrieval
+        if self.check_ollama_alive() and (query or archetype != "all"):
+            try:
+                llm_matches = self._query_ollama_research_clips(
+                    sentences=sentences,
+                    query=query,
+                    archetype=archetype,
+                    min_seconds=min_seconds,
+                    max_seconds=max_seconds,
+                    top_k=top_k
+                )
+                if llm_matches and len(llm_matches) >= 1:
+                    snapped = self._snap_llm_clips(sentences, llm_matches, min_seconds, max_seconds)
+                    if snapped:
+                        return snapped[:top_k]
+            except Exception as e:
+                print(f"[Viral Research Warning] Ollama research fallback: {e}")
+
+        # 2. High-Precision Semantic & NLP Viral Angle Research Engine
+        return self._heuristic_research_clips(
+            sentences=sentences,
+            query=query,
+            archetype=archetype,
+            min_seconds=min_seconds,
+            max_seconds=max_seconds,
+            top_k=top_k
+        )
+
+    def _query_ollama_research_clips(
+        self,
+        sentences: List[Dict[str, Any]],
+        query: str,
+        archetype: str,
+        min_seconds: float,
+        max_seconds: float,
+        top_k: int
+    ) -> List[Dict[str, Any]]:
+        """Queries local Ollama to find clips matching a creator's research intent."""
+        transcript_lines = []
+        for s in sentences:
+            start_m, start_s = divmod(int(s["start"]), 60)
+            end_m, end_s = divmod(int(s["end"]), 60)
+            transcript_lines.append(f"[{start_m:02d}:{start_s:02d} - {end_m:02d}:{end_s:02d}] {s['text']}")
+
+        full_text = "\n".join(transcript_lines[:450])
+        archetype_desc = {
+            "controversial": "Controversial / Polarizing debate, disagreement, or counter-intuitive claim.",
+            "mindset": "Mindset Shift / Lightbulb realization, deep psychology, or paradigm change.",
+            "story": "Personal Story / Emotional vulnerability, struggle, or breakthrough.",
+            "blueprint": "Actionable Blueprint / Step-by-step tactics, rules, or practical advice.",
+            "reveal": "Shocking Reveal / Hidden secret, myth debunked, or eye-opening question."
+        }.get(archetype, "High-retention viral storytelling moment.")
+
+        prompt = f"""You are an elite podcast researcher and viral short-form director for TikTok, YouTube Shorts, and Reels.
+Your objective: Research this podcast transcript and extract the {top_k} moments matching the creator's search request.
+
+CREATOR RESEARCH REQUEST:
+- Search Query: "{query or 'Most engaging viral insight'}"
+- Viral Angle Focus: "{archetype_desc}"
+
+CRITICAL RULES:
+1. Complete Narrative Arc: Every clip MUST begin with a captivating hook sentence and conclude naturally with full context.
+2. Duration: Each clip duration must be between {int(min_seconds)}s and {int(max_seconds)}s (sweet spot 60-90s).
+3. Output an engaging 6 to 12 word TOPIC HEADLINE in ALL CAPS.
+4. Categorize the clip into an Archetype ('Controversial Take', 'Mindset Shift', 'Personal Story', 'Actionable Blueprint', 'Shocking Reveal').
+
+Transcript:
+{full_text}
+
+Respond ONLY with a JSON array:
+[
+  {{
+    "start": 14.5,
+    "end": 78.0,
+    "title": "THE REAL REASON 99% OF PEOPLE FAIL AT THIS",
+    "hook": "Opening hook statement...",
+    "archetype": "Controversial Take",
+    "virality_score": 96,
+    "reason": "Directly answers the research query with an emotionally charged contrarian insight."
+  }}
+]
+"""
+        req_data = json.dumps({
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "format": "json"
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            f"{self.ollama_url}/api/generate",
+            data=req_data,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+
+        with urllib.request.urlopen(req, timeout=8.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            content = data.get("response", "").strip()
+            match = re.search(r"\[.*\]", content, re.DOTALL)
+            if match:
+                parsed = json.loads(match.group(0))
+                if isinstance(parsed, list):
+                    return parsed
+        return []
+
+    def _heuristic_research_clips(
+        self,
+        sentences: List[Dict[str, Any]],
+        query: str,
+        archetype: str,
+        min_seconds: float,
+        max_seconds: float,
+        top_k: int
+    ) -> List[Dict[str, Any]]:
+        """Fast, robust semantic & archetype-driven NLP research engine."""
+        query_terms = [w.lower() for w in re.findall(r"\w+", query) if len(w) > 2]
+        stop_words = {"the", "and", "that", "this", "with", "from", "your", "what", "about", "have", "more"}
+        clean_terms = [t for t in query_terms if t not in stop_words]
+
+        archetype_markers = {
+            "controversial": {"disagree", "wrong", "mistake", "lie", "myth", "actually", "truth", "never", "hate", "fight", "argue", "problem", "fake", "terrible", "worst", "danger", "ruined", "stop"},
+            "mindset": {"realize", "perspective", "changed", "think", "mind", "belief", "brain", "focus", "discipline", "habits", "psychology", "mental", "attitude", "paradigm", "aware"},
+            "story": {"remember", "when", "years", "happened", "told", "suddenly", "started", "lost", "struggled", "crying", "felt", "moment", "journey", "life", "first"},
+            "blueprint": {"step", "first", "second", "how", "rule", "strategy", "method", "system", "daily", "protocol", "secret", "technique", "formula", "process", "tips"},
+            "reveal": {"why", "what", "secret", "nobody", "hidden", "discover", "shocking", "found", "truth", "exposed", "scam", "proof"}
+        }
+
+        candidates = []
+        n = len(sentences)
+
+        for i in range(n):
+            first_sent = sentences[i]
+            if first_sent.get("is_hanging_start"):
+                continue
+
+            # Accumulate window until duration target is reached
+            accum_text = []
+            for j in range(i, n):
+                curr_sent = sentences[j]
+                accum_text.append(curr_sent["text"])
+                dur = curr_sent["end"] - first_sent["start"]
+
+                if dur < min_seconds:
+                    continue
+                if dur > max_seconds * 1.15:
+                    break
+
+                if curr_sent.get("is_hanging_end"):
+                    continue
+
+                full_clip_text = " ".join(accum_text).lower()
+
+                # 1. Query Relevance Score (0 to 40)
+                q_score = 0
+                if clean_terms:
+                    matched_terms = sum(1 for t in clean_terms if t in full_clip_text)
+                    q_score = min(40, int((matched_terms / max(1, len(clean_terms))) * 40))
+                    # Exact query phrase bonus
+                    if query and query.lower() in full_clip_text:
+                        q_score = min(40, q_score + 15)
+                else:
+                    q_score = 25  # Neutral baseline if no search query
+
+                # 2. Archetype Alignment Score (0 to 25)
+                arch_score = 15
+                detected_arch = "Mindset Shift"
+                if archetype in archetype_markers:
+                    markers = archetype_markers[archetype]
+                    m_hits = sum(1 for m in markers if m in full_clip_text)
+                    arch_score = min(25, 10 + m_hits * 3)
+                    detected_arch = archetype.replace("_", " ").title()
+                else:
+                    # Auto-detect strongest archetype
+                    best_hits = 0
+                    for a_key, a_words in archetype_markers.items():
+                        hits = sum(1 for w in a_words if w in full_clip_text)
+                        if hits > best_hits:
+                            best_hits = hits
+                            detected_arch = a_key.replace("_", " ").title()
+                    arch_score = min(25, 12 + best_hits * 2)
+
+                # 3. Hook Virality (0 to 20)
+                hook_score = 10
+                if first_sent.get("is_hook") or first_sent["text"].endswith("?"):
+                    hook_score += 8
+                if any(p in first_sent["text"].lower() for p in self.ANCHOR_PHRASES):
+                    hook_score += 5
+
+                # 4. Conclusion & 60-90s Retention (0 to 15)
+                pacing_score = 8
+                if 60.0 <= dur <= 90.0:
+                    pacing_score += 5  # Sweet spot bonus
+                if not curr_sent.get("is_hanging_end"):
+                    pacing_score += 2
+
+                total_score = min(99, max(65, q_score + arch_score + hook_score + pacing_score))
+
+                candidates.append({
+                    "start_idx": i,
+                    "end_idx": j,
+                    "start": round(first_sent["start"], 2),
+                    "end": round(curr_sent["end"], 2),
+                    "duration": round(dur, 2),
+                    "score": total_score,
+                    "archetype": detected_arch,
+                    "q_score": q_score,
+                    "hook_score": min(99, hook_score * 5),
+                    "story_score": min(99, (arch_score + q_score) * 2),
+                    "conclusion_score": min(99, pacing_score * 6),
+                    "clip_sentences": sentences[i:j + 1]
+                })
+
+        # Rank by total score
+        candidates.sort(key=lambda c: c["score"], reverse=True)
+
+        # Non-overlapping greedy selection
+        selected = []
+        for cand in candidates:
+            c_start = cand["start"]
+            c_end = cand["end"]
+            overlap = False
+            for s in selected:
+                s_start = s["start"]
+                s_end = s["end"]
+                # Overlap check
+                intersection = max(0.0, min(c_end, s_end) - max(c_start, s_start))
+                min_len = min(c_end - c_start, s_end - s_start)
+                if min_len > 0 and (intersection / min_len) > 0.35:
+                    overlap = True
+                    break
+
+            if not overlap:
+                clip_text = " ".join(sent["text"] for sent in cand["clip_sentences"])
+                topic_title = self._extract_topic_headline(clip_text, cand["clip_sentences"][0]["text"])
+                cand_id = f"res_{int(c_start)}_{int(c_end)}"
+                selected.append({
+                    "id": cand_id,
+                    "title": topic_title,
+                    "hook": cand["clip_sentences"][0]["text"],
+                    "start": cand["start"],
+                    "end": cand["end"],
+                    "duration": cand["duration"],
+                    "virality_score": cand["score"],
+                    "archetype": cand["archetype"],
+                    "narrative_breakdown": {
+                        "hook_score": cand["hook_score"],
+                        "story_score": cand["story_score"],
+                        "conclusion_score": cand["conclusion_score"],
+                        "shareability": min(99, cand["score"] + 2)
+                    },
+                    "reason": f"High {cand['archetype']} retention with complete {cand['duration']}s narrative arc.",
+                    "full_transcript": clip_text
+                })
+
+            if len(selected) >= top_k:
+                break
+
+        return selected
 
 
 

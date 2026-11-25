@@ -2,6 +2,7 @@ import sqlite3
 import json
 import time
 import os
+import uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -73,6 +74,7 @@ class HistoryManager:
                 "ALTER TABLE projects ADD COLUMN timeline_json TEXT DEFAULT ''",
                 "ALTER TABLE projects ADD COLUMN summary_json TEXT DEFAULT ''",
                 "ALTER TABLE projects ADD COLUMN transcript_json TEXT DEFAULT ''",
+                "ALTER TABLE projects ADD COLUMN editor_json TEXT DEFAULT ''",
                 "ALTER TABLE clips ADD COLUMN part_info TEXT DEFAULT ''",
                 "ALTER TABLE clips ADD COLUMN series_id TEXT DEFAULT ''",
                 "ALTER TABLE clips ADD COLUMN start_sec REAL DEFAULT 0.0",
@@ -81,7 +83,10 @@ class HistoryManager:
                 "ALTER TABLE clips ADD COLUMN social_kit TEXT DEFAULT ''",
                 "ALTER TABLE clips ADD COLUMN words_json TEXT DEFAULT ''",
                 "ALTER TABLE clips ADD COLUMN top_padding REAL DEFAULT 0.0",
-                "ALTER TABLE clips ADD COLUMN bottom_padding REAL DEFAULT 0.0"
+                "ALTER TABLE clips ADD COLUMN bottom_padding REAL DEFAULT 0.0",
+                "ALTER TABLE clips ADD COLUMN cover TEXT DEFAULT ''",
+                "ALTER TABLE clips ADD COLUMN covers_json TEXT DEFAULT ''",
+                "ALTER TABLE clips ADD COLUMN folder_name TEXT DEFAULT ''"
             ]:
                 try:
                     cursor.execute(alter_sql)
@@ -130,6 +135,10 @@ class HistoryManager:
                 sk_json = json.dumps(raw_sk) if isinstance(raw_sk, dict) else (raw_sk or "")
                 raw_words = c.get("words")
                 words_json = json.dumps(raw_words) if isinstance(raw_words, list) else ""
+                raw_covers = c.get("covers") or []
+                covers_json = json.dumps(raw_covers) if isinstance(raw_covers, list) else ""
+                cover_val = c.get("cover") or (raw_covers[0] if raw_covers else "")
+                folder_val = c.get("folder_name") or ""
 
                 cursor.execute("""
                 INSERT OR REPLACE INTO clips (
@@ -137,8 +146,8 @@ class HistoryManager:
                     hook_score, story_score, conclusion_score, duration,
                     start_sec, end_sec, subtitle_style, layout_mode,
                     social_kit, full_transcript, part_info, series_id, words_json,
-                    top_padding, bottom_padding, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    top_padding, bottom_padding, cover, covers_json, folder_name, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     clip_id,
                     project_id,
@@ -161,6 +170,9 @@ class HistoryManager:
                     words_json,
                     float(c.get("top_padding", 0.0)),
                     float(c.get("bottom_padding", 0.0)),
+                    cover_val,
+                    covers_json,
+                    folder_val,
                     now
                 ))
             conn.commit()
@@ -207,6 +219,15 @@ class HistoryManager:
                         p_dict["transcript_segments"] = []
                 else:
                     p_dict["transcript_segments"] = []
+
+                    raw_editor = p_dict.get("editor_json")
+                    if raw_editor and isinstance(raw_editor, str):
+                        try:
+                            p_dict["editor_project"] = json.loads(raw_editor)
+                        except Exception:
+                            p_dict["editor_project"] = None
+                    else:
+                        p_dict["editor_project"] = None
 
                 # Fetch clips for this project
                 cursor.execute("SELECT * FROM clips WHERE project_id = ? ORDER BY created_at ASC", (p["id"],))
@@ -290,6 +311,15 @@ class HistoryManager:
             else:
                 p_dict["transcript_segments"] = []
 
+            raw_editor = p_dict.get("editor_json")
+            if raw_editor and isinstance(raw_editor, str):
+                try:
+                    p_dict["editor_project"] = json.loads(raw_editor)
+                except Exception:
+                    p_dict["editor_project"] = None
+            else:
+                p_dict["editor_project"] = None
+
             # Fetch clips for this project
             cursor.execute("SELECT * FROM clips WHERE project_id = ? ORDER BY created_at ASC", (project_id,))
             clip_rows = cursor.fetchall()
@@ -360,6 +390,19 @@ class HistoryManager:
                 c_dict["words"] = []
             c_dict["top_padding"] = float(c_dict.get("top_padding") or 0.0)
             c_dict["bottom_padding"] = float(c_dict.get("bottom_padding") or 0.0)
+
+            # Parse covers_json if available
+            raw_cvs = c_dict.get("covers_json")
+            if raw_cvs and isinstance(raw_cvs, str):
+                try:
+                    c_dict["covers"] = json.loads(raw_cvs)
+                except Exception:
+                    c_dict["covers"] = []
+            else:
+                c_dict["covers"] = []
+            if not c_dict.get("cover") and c_dict.get("covers"):
+                c_dict["cover"] = c_dict["covers"][0]
+
             return c_dict
 
     @classmethod
@@ -400,7 +443,7 @@ class HistoryManager:
             "filename", "title", "hook", "virality_score", "duration",
             "start_sec", "end_sec", "subtitle_style", "layout_mode",
             "social_kit", "full_transcript", "part_info", "words_json",
-            "top_padding", "bottom_padding"
+            "top_padding", "bottom_padding", "cover", "covers_json", "folder_name"
         ]
         set_clauses = []
         values = []
@@ -515,6 +558,81 @@ class HistoryManager:
                         except Exception:
                             pass
             cursor.execute("DELETE FROM clips WHERE id = ?", (clip_id,))
+            conn.commit()
+            return True
+
+    @classmethod
+    def save_editor_project(cls, project_id: str, editor_project: Dict[str, Any], title: Optional[str] = None) -> bool:
+        """Persists the normalized studio document without replacing rendered clips."""
+        cls.init_db()
+        serialized = json.dumps(editor_project, ensure_ascii=False)
+        with cls._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE projects SET editor_json = ?, title = COALESCE(?, title) WHERE id = ?",
+                (serialized, title, project_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    @classmethod
+    def replace_project_clips(cls, project_id: str, new_clips: List[Dict[str, Any]]) -> bool:
+        """Replaces all clips for a project with newly rendered clips and updates project clip count."""
+        cls.init_db()
+        now = time.time()
+        with cls._get_connection() as conn:
+            cursor = conn.cursor()
+            # Clean up old clips from DB
+            cursor.execute("DELETE FROM clips WHERE project_id = ?", (project_id,))
+
+            for idx, c in enumerate(new_clips):
+                clip_id = c.get("id") or str(uuid.uuid4())
+                raw_sk = c.get("social_kit")
+                sk_json = json.dumps(raw_sk) if isinstance(raw_sk, dict) else (raw_sk or "")
+                raw_words = c.get("words")
+                words_json = json.dumps(raw_words) if isinstance(raw_words, list) else ""
+                breakdown = c.get("narrative_breakdown") or {}
+                raw_cvs = c.get("covers") or []
+                covers_json = json.dumps(raw_cvs) if isinstance(raw_cvs, list) else ""
+                cover_val = c.get("cover") or (raw_cvs[0] if raw_cvs else "")
+                folder_val = c.get("folder_name") or ""
+
+                cursor.execute("""
+                INSERT INTO clips (
+                    id, project_id, filename, title, hook, virality_score,
+                    hook_score, story_score, conclusion_score, duration,
+                    start_sec, end_sec, subtitle_style, layout_mode,
+                    social_kit, full_transcript, part_info, series_id, words_json,
+                    top_padding, bottom_padding, cover, covers_json, folder_name, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    clip_id,
+                    project_id,
+                    c.get("filename", ""),
+                    c.get("title", f"Viral Clip {idx + 1}"),
+                    c.get("hook", ""),
+                    int(c.get("virality_score", 90)),
+                    int(breakdown.get("hook_score", 90)),
+                    int(breakdown.get("story_score", 90)),
+                    int(breakdown.get("conclusion_score", 90)),
+                    float(c.get("duration", 30.0)),
+                    float(c.get("start", c.get("start_sec", 0.0))),
+                    float(c.get("end", c.get("end_sec", 0.0))),
+                    c.get("subtitle_style", "hormozi"),
+                    c.get("layout_mode", "speaker_focus"),
+                    sk_json,
+                    c.get("full_transcript", c.get("hook", "")),
+                    c.get("part_info", ""),
+                    c.get("series_id", ""),
+                    words_json,
+                    float(c.get("top_padding", 0.0)),
+                    float(c.get("bottom_padding", 0.0)),
+                    cover_val,
+                    covers_json,
+                    folder_val,
+                    now
+                ))
+
             conn.commit()
             return True
 

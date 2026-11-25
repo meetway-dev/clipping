@@ -64,7 +64,7 @@ def extract_clip_metadata(clip: Dict[str, Any], index: int = 1) -> Dict[str, Any
         ]
 
     # Extract hashtags
-    raw_tags = social_kit.get("hashtags")
+    raw_tags = social_kit.get("hashtags") or social_kit.get("viral_hashtags")
     tags_list: List[str] = []
     if isinstance(raw_tags, list):
         tags_list = [str(t).strip() for t in raw_tags if str(t).strip()]
@@ -87,6 +87,7 @@ def extract_clip_metadata(clip: Dict[str, Any], index: int = 1) -> Dict[str, Any
         ]
 
     hashtags_str = social_kit.get("hashtags_string") or " ".join(tags_list)
+    transcript = clip.get("full_transcript") or clip.get("transcript") or ""
     caption = social_kit.get("full_caption") or (
         f"{title}\n\n"
         f"Key Takeaway: {hook or topic}\n\n"
@@ -103,6 +104,7 @@ def extract_clip_metadata(clip: Dict[str, Any], index: int = 1) -> Dict[str, Any
         "end_sec": end_sec,
         "duration": duration,
         "hook": hook,
+        "transcript": transcript,
         "titles": titles,
         "hashtags": tags_list,
         "hashtags_string": hashtags_str,
@@ -256,6 +258,8 @@ def generate_session_text(clips: List[Dict[str, Any]], session_title: str = "Cli
         lines.append(f"    Timestamp: {format_timestamp(m['start_sec'])} - {format_timestamp(m['end_sec'])} ({int(round(m['duration']))}s)")
         if m["hook"]:
             lines.append(f"    Hook:      \"{m['hook']}\"")
+        if m.get("transcript"):
+            lines.append(f"    Transcript: \"{m['transcript']}\"")
         lines.append(f"    Hashtags:  {m['hashtags_string']}")
 
         if m["titles"]:
@@ -293,6 +297,8 @@ def generate_session_markdown(clips: List[Dict[str, Any]], session_title: str = 
         lines.append(f"- **⏱ Timing:** `{format_timestamp(m['start_sec'])}` – `{format_timestamp(m['end_sec'])}` ({int(round(m['duration']))}s)")
         if m["hook"]:
             lines.append(f"- **💬 Hook:** *\"{m['hook']}\"*")
+        if m.get("transcript"):
+            lines.append(f"- **📝 Transcript:** *\"{m['transcript']}\"*")
         lines.append(f"- **🏷 Hashtags:** `{m['hashtags_string']}`")
         lines.append("")
 
@@ -347,3 +353,57 @@ def add_session_docs_to_zip(
         zf.writestr("session_clips_info.md", md_content.encode("utf-8"))
     except Exception as e:
         print(f"[DocsGenerator] Failed to write md: {e}")
+
+def generate_clip_docx(clip: Dict[str, Any]) -> bytes:
+    """Generates a dedicated Word (.docx) document for a single clip."""
+    m = extract_clip_metadata(clip, 1)
+    title = m.get("title") or m.get("topic") or "Podcast Clip"
+    return generate_session_docx([clip], session_title=f"Clip: {title}")
+
+def generate_clip_text(clip: Dict[str, Any]) -> str:
+    """Generates a dedicated plain text (.txt) document for a single clip."""
+    m = extract_clip_metadata(clip, 1)
+    title = m.get("title") or m.get("topic") or "Podcast Clip"
+    return generate_session_text([clip], session_title=f"Clip: {title}")
+
+def generate_clip_markdown(clip: Dict[str, Any]) -> str:
+    """Generates a dedicated Markdown (.md) document for a single clip."""
+    m = extract_clip_metadata(clip, 1)
+    title = m.get("title") or m.get("topic") or "Podcast Clip"
+    return generate_session_markdown([clip], session_title=f"Clip: {title}")
+
+def create_clip_docs_files(clip: Dict[str, Any], output_dir: Any, base_name: str) -> Dict[str, Any]:
+    """
+    Creates and saves .docx, .txt, and .md files specifically for this single clip
+    inside its dedicated topic folder.
+    """
+    from pathlib import Path
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    paths = {}
+    try:
+        docx_path = out_dir / f"{base_name}_docs.docx"
+        docx_bytes = generate_clip_docx(clip)
+        docx_path.write_bytes(docx_bytes)
+        paths["docx"] = str(docx_path)
+    except Exception as e:
+        print(f"[DocsGenerator Error] Single clip docx failed: {e}")
+
+    try:
+        txt_path = out_dir / f"{base_name}_docs.txt"
+        txt_content = generate_clip_text(clip)
+        txt_path.write_text(txt_content, encoding="utf-8")
+        paths["txt"] = str(txt_path)
+    except Exception as e:
+        print(f"[DocsGenerator Error] Single clip txt failed: {e}")
+
+    try:
+        md_path = out_dir / f"{base_name}_docs.md"
+        md_content = generate_clip_markdown(clip)
+        md_path.write_text(md_content, encoding="utf-8")
+        paths["md"] = str(md_path)
+    except Exception as e:
+        print(f"[DocsGenerator Error] Single clip md failed: {e}")
+
+    return paths

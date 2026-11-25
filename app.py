@@ -24,7 +24,7 @@ import urllib.request
 import subprocess
 import cv2
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Body
 from fastapi.staticfiles import StaticFiles
@@ -33,7 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from core.config import BASE_DIR, UPLOADS_DIR, OUTPUTS_DIR, TEMP_DIR, FFMPEG_PATH, DEFAULT_CONFIG
-from core.pipeline import ClipForgePipeline
+from core.pipeline import ClipForgePipeline, sanitize_topic_filename
 from core.viral_detector import ViralDetector
 from core.youtube_downloader import YouTubeDownloader
 from core.history_manager import HistoryManager
@@ -43,7 +43,16 @@ from core.renderer import VideoRenderer
 from core.face_tracker import SmartFaceTracker
 from core.ollama_manager import OllamaManager
 from core.gdrive_manager import GoogleDriveManager
-from core.docs_generator import add_session_docs_to_zip, generate_session_docx, generate_session_text, generate_session_markdown
+from core.docs_generator import (
+    add_session_docs_to_zip,
+    generate_session_docx,
+    generate_session_text,
+    generate_session_markdown,
+    generate_clip_docx,
+    generate_clip_text,
+    generate_clip_markdown,
+    create_clip_docs_files
+)
 from core.thumbnail_designer import TikTokThumbnailDesigner
 
 # Initialize FastAPI Application
@@ -187,12 +196,16 @@ async def sync_peakcut_data():
         clips_formatted = []
         for c in p.get("clips", []):
             fn = c.get("filename", "")
-            cover_name = Path(fn).with_suffix(".jpg").name if fn else ""
+            cover_name = c.get("cover") or (Path(fn).with_suffix(".jpg").name if fn else "")
+            covers = c.get("covers") or ([cover_name] if cover_name else [])
+            folder_name = c.get("folder_name") or ""
             clips_formatted.append({
                 "id": c.get("id"),
                 "project_id": p.get("id"),
                 "filename": fn,
                 "cover": cover_name,
+                "covers": covers,
+                "folder_name": folder_name,
                 "title": c.get("title", ""),
                 "hook": c.get("hook", ""),
                 "virality_score": c.get("virality_score", 90),
@@ -261,8 +274,10 @@ def _resolve_video_source(source: Optional[str]) -> Optional[Path]:
             return p
         # Check project ID
         proj = HistoryManager.get_project_by_id(s)
-        if proj and proj.get("source_video") and Path(proj["source_video"]).exists():
-            return Path(proj["source_video"])
+        if proj and proj.get("source_video"):
+            project_source = Path(proj["source_video"])
+            if project_source.is_file():
+                return project_source
         # Check directory candidates
         for v_dir in [UPLOADS_DIR, TEMP_DIR, OUTPUTS_DIR]:
             candidate = v_dir / s
@@ -272,6 +287,11 @@ def _resolve_video_source(source: Optional[str]) -> Optional[Path]:
                 cand_mp4 = v_dir / f"{s}.mp4"
                 if cand_mp4.exists() and cand_mp4.is_file():
                     return cand_mp4
+        for v_dir in [UPLOADS_DIR, TEMP_DIR, OUTPUTS_DIR]:
+            project_matches = list(v_dir.glob(f"*{s[:8]}*.mp4"))
+            for match in project_matches:
+                if match.is_file():
+                    return match
 
     # Fallback to any available video in uploads or temp
     for v_dir in [UPLOADS_DIR, TEMP_DIR]:
@@ -523,49 +543,78 @@ async def preview_layout_info(
         "layout_mode": layout
     }
 
-@app.get("/media/{jid}/{name}")
+@app.get("/media/{name}")
+async def serve_flat_media(name: str):
+    """Serve a file directly from a flat output/temporary directory."""
+    if "/" in name or "\\" in name:
+        raise HTTPException(status_code=400, detail="Invalid media filename")
+
+    for directory in [OUTPUTS_DIR, TEMP_DIR, UPLOADS_DIR]:
+        candidate = directory / name
+        if candidate.is_file():
+            if candidate.suffix.lower() in (".jpg", ".jpeg", ".png"):
+                return FileResponse(candidate, media_type="image/jpeg")
+            if candidate.suffix.lower() in (".mp4", ".webm", ".mov"):
+                return FileResponse(candidate, media_type="video/mp4")
+            return FileResponse(candidate)
+
+    raise HTTPException(status_code=404, detail="Media file not found")
+
+
+@app.get("/media/{jid}/{name:path}")
 async def serve_media(jid: str, name: str):
+    # Resolve file inside OUTPUTS_DIR or topic subfolder
+    clean_name = name.lstrip("/")
+    target_path = OUTPUTS_DIR / clean_name
+    if not target_path.exists():
+        fname_only = Path(clean_name).name
+        candidates = list(OUTPUTS_DIR.rglob(fname_only))
+        if candidates:
+            target_path = candidates[0]
+
     # Handle image thumbnails (.jpg, .jpeg, .png)
-    if name.lower().endswith((".jpg", ".jpeg", ".png")):
-        p = OUTPUTS_DIR / name
-        if p.exists():
-            return FileResponse(p, media_type="image/jpeg")
+    if clean_name.lower().endswith((".jpg", ".jpeg", ".png")):
+        if target_path.exists():
+            return FileResponse(target_path, media_type="image/jpeg")
         # On-the-fly TikTok thumbnail cover generation with real speaker body & topic text
-        base_video_name = Path(name).stem + ".mp4"
+        base_video_name = Path(clean_name).stem.split("_thumb_")[0] + ".mp4"
         for v_dir in [OUTPUTS_DIR, UPLOADS_DIR, TEMP_DIR]:
             vid_p = v_dir / base_video_name
+            if not vid_p.exists():
+                v_cands = list(v_dir.rglob(base_video_name))
+                if v_cands:
+                    vid_p = v_cands[0]
             if vid_p.exists():
                 try:
                     clip_obj = HistoryManager.get_clip_by_filename(base_video_name) or {}
-                    topic = clip_obj.get("title") or clip_obj.get("hook") or Path(name).stem.replace("_", " ").title()
+                    topic = clip_obj.get("title") or clip_obj.get("hook") or Path(clean_name).stem.replace("_", " ").title()
                     TikTokThumbnailDesigner.create_tiktok_thumbnail(
                         video_path=str(vid_p),
-                        output_jpg_path=str(p),
+                        output_jpg_path=str(target_path),
                         topic=topic,
                         title=topic,
                         hook=clip_obj.get("hook", ""),
                         transcript=clip_obj.get("full_transcript", ""),
                         timestamp_sec=1.2
                     )
-                    if p.exists():
-                        return FileResponse(p, media_type="image/jpeg")
+                    if target_path.exists():
+                        return FileResponse(target_path, media_type="image/jpeg")
                 except Exception:
                     pass
                 try:
-                    VideoRenderer().generate_thumbnail(str(vid_p), str(p), timestamp_sec=1.0)
-                    if p.exists():
-                        return FileResponse(p, media_type="image/jpeg")
+                    VideoRenderer().generate_thumbnail(str(vid_p), str(target_path), timestamp_sec=1.0)
+                    if target_path.exists():
+                        return FileResponse(target_path, media_type="image/jpeg")
                 except Exception:
                     pass
         raise HTTPException(status_code=404, detail="Thumbnail not found")
 
-    p = OUTPUTS_DIR / name
-    if p.exists():
-        return FileResponse(p, media_type="video/mp4")
-    p_up = UPLOADS_DIR / name
+    if target_path.exists():
+        return FileResponse(target_path, media_type="video/mp4")
+    p_up = UPLOADS_DIR / clean_name
     if p_up.exists():
         return FileResponse(p_up, media_type="video/mp4")
-    p_tmp = TEMP_DIR / name
+    p_tmp = TEMP_DIR / clean_name
     if p_tmp.exists():
         return FileResponse(p_tmp, media_type="video/mp4")
     raise HTTPException(status_code=404, detail="Media file not found")
@@ -588,11 +637,12 @@ async def remake_clip(jid: str, cid: str, payload: Dict[str, Any] = Body(...)):
     edited_words = payload.get("words")
     
     proj = HistoryManager.get_project_by_id(jid)
-    if not proj or not proj.get("source_video") or not Path(proj["source_video"]).exists():
+    resolved_source = _resolve_video_source(jid)
+    if not resolved_source:
         raise HTTPException(status_code=404, detail="Source video not found")
         
     duration = max(3.0, end_sec - start_sec)
-    source_video = proj["source_video"]
+    source_video = str(resolved_source)
     
     # 1. Use user-edited words if provided from the interactive transcript editor
     words = []
@@ -742,10 +792,142 @@ async def bulk_delete(payload: Dict[str, Any] = Body(...)):
             deleted_clips += 1
     return {"videos": deleted_vids, "clips": deleted_clips}
 
+def package_clips_into_zip(zf: zipfile.ZipFile, clips: List[Dict[str, Any]], session_title: str = "ClipForge Session"):
+    """
+    Packages clips into a clean multi-folder structure:
+    Every clip gets its own dedicated topic folder containing:
+    - 1 topic-named video file (.mp4)
+    - 3 distinct viral thumbnails (_thumb_1, _thumb_2, _thumb_3) for TikTok
+    - 1 clip-specific documentation file (.docx and .txt)
+    Plus overall session documentation.
+    """
+    for i, clip in enumerate(clips, 1):
+        raw_topic = clip.get("topic") or clip.get("title") or f"Clip_{i}"
+        safe_name = re.sub(r"[^\w\-]", "_", str(raw_topic)).strip("_") or f"Clip_{i}"
+        if clip.get("part_info") and "part" not in safe_name.lower():
+            safe_name = f"{safe_name}_{clip['part_info'].lower().replace(' ', '_')}"
+
+        folder_name = clip.get("folder_name") or safe_name
+        zip_folder = f"{i:02d}_{folder_name}" if len(clips) > 1 else folder_name
+
+        # 1. Resolve video file
+        vid_path = None
+        fn = clip.get("filename")
+        if fn and (OUTPUTS_DIR / fn).exists():
+            vid_path = OUTPUTS_DIR / fn
+        elif clip.get("output_file") and Path(clip["output_file"]).exists():
+            vid_path = Path(clip["output_file"])
+        else:
+            folder_vid = OUTPUTS_DIR / folder_name / f"{safe_name}.mp4"
+            if folder_vid.exists():
+                vid_path = folder_vid
+
+        if vid_path and vid_path.exists():
+            arc_video_name = f"{zip_folder}/{vid_path.name}"
+            zf.write(vid_path, arcname=arc_video_name)
+
+            stem = vid_path.stem
+            # 2. Add 3 Viral Thumbnails
+            explicit_covers = clip.get("covers") or []
+            thumb_written = False
+            if explicit_covers:
+                for c_idx, cov_rel in enumerate(explicit_covers, 1):
+                    cov_p = OUTPUTS_DIR / cov_rel
+                    if not cov_p.exists():
+                        cov_p = OUTPUTS_DIR / Path(cov_rel).name
+                    if not cov_p.exists() and folder_name:
+                        cov_p = OUTPUTS_DIR / folder_name / Path(cov_rel).name
+                    if cov_p.exists():
+                        tag = "curiosity" if c_idx == 1 else "warning" if c_idx == 2 else "blueprint"
+                        zf.write(cov_p, arcname=f"{zip_folder}/{stem}_thumb_{c_idx}_{tag}.jpg")
+                        if c_idx == 1:
+                            zf.write(cov_p, arcname=f"{zip_folder}/{stem}.jpg")
+                        thumb_written = True
+
+            if not thumb_written:
+                t1 = OUTPUTS_DIR / folder_name / f"{stem}_thumb_1.jpg"
+                if not t1.exists():
+                    t1 = OUTPUTS_DIR / f"{stem}_thumb_1.jpg"
+                if not t1.exists():
+                    t1 = OUTPUTS_DIR / f"{stem}.jpg"
+                if t1.exists():
+                    zf.write(t1, arcname=f"{zip_folder}/{stem}_thumb_1_curiosity.jpg")
+                    zf.write(t1, arcname=f"{zip_folder}/{stem}.jpg")
+
+                t2 = OUTPUTS_DIR / folder_name / f"{stem}_thumb_2.jpg"
+                if not t2.exists():
+                    t2 = OUTPUTS_DIR / f"{stem}_thumb_2.jpg"
+                if t2.exists():
+                    zf.write(t2, arcname=f"{zip_folder}/{stem}_thumb_2_warning.jpg")
+
+                t3 = OUTPUTS_DIR / folder_name / f"{stem}_thumb_3.jpg"
+                if not t3.exists():
+                    t3 = OUTPUTS_DIR / f"{stem}_thumb_3.jpg"
+                if t3.exists():
+                    zf.write(t3, arcname=f"{zip_folder}/{stem}_thumb_3_blueprint.jpg")
+
+            # Fallback if no thumbnails found on disk
+            if not thumb_written and not (OUTPUTS_DIR / f"{stem}.jpg").exists() and vid_path.exists():
+                try:
+                    fallback_thumb = TEMP_DIR / f"{stem}_temp.jpg"
+                    VideoRenderer().generate_thumbnail(str(vid_path), str(fallback_thumb), timestamp_sec=1.0)
+                    if fallback_thumb.exists():
+                        zf.write(fallback_thumb, arcname=f"{zip_folder}/{stem}_thumb_1_curiosity.jpg")
+                        zf.write(fallback_thumb, arcname=f"{zip_folder}/{stem}.jpg")
+                except Exception:
+                    pass
+
+            # 3. Add single clip documentation
+            try:
+                clip_docx = generate_clip_docx(clip)
+                zf.writestr(f"{zip_folder}/{stem}_docs.docx", clip_docx)
+                clip_txt = generate_clip_text(clip)
+                zf.writestr(f"{zip_folder}/{stem}_docs.txt", clip_txt.encode("utf-8"))
+            except Exception as d_err:
+                print(f"[ZIP Packaging] Single clip doc error: {d_err}")
+
+    # Add full session documentation
+    if clips:
+        add_session_docs_to_zip(zf, clips, session_title=session_title)
+
+@app.get("/api/clips/{clip_id}/download-zip")
+async def download_single_clip_zip(clip_id: str):
+    """
+    Downloads a single clip's complete production package as a ZIP:
+    - 1 Topic-named video file (.mp4)
+    - 3 distinct viral TikTok cover thumbnails (_thumb_1, _thumb_2, _thumb_3)
+    - 1 Clip-specific documentation file (.docx and .txt)
+    """
+    clip = HistoryManager.get_clip_by_id(clip_id)
+    if not clip:
+        for jid, j in JOBS.items():
+            for c in j.get("result", {}).get("clips", []):
+                if c.get("id") == clip_id:
+                    clip = c
+                    break
+            if clip:
+                break
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found")
+
+    raw_topic = clip.get("topic") or clip.get("title") or "clip"
+    safe_name = re.sub(r"[^\w\-]", "_", str(raw_topic)).strip("_") or "podcast_clip"
+    filename = f"{safe_name}_package.zip"
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        package_clips_into_zip(zf, [clip], session_title=safe_name)
+
+    buf.seek(0)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
 @app.get("/api/clips.zip")
 async def get_clips_zip(ids: Optional[str] = None):
     projects = HistoryManager.get_all_projects()
-    target_files = []
     target_clips = []
     
     if ids:
@@ -753,41 +935,27 @@ async def get_clips_zip(ids: Optional[str] = None):
         for p in projects:
             for c in p.get("clips", []):
                 key = f"{p['id']}.{c['id']}"
-                if key in id_set or c.get("id") in id_set:
-                    fn = c.get("filename")
-                    if fn and (OUTPUTS_DIR / fn).exists():
-                        target_files.append((OUTPUTS_DIR / fn, fn))
-                        target_clips.append(c)
+                if key in id_set or c.get("id") in id_set or any(x == str(c.get("id")) or x.endswith("." + str(c.get("id"))) for x in id_set):
+                    target_clips.append(c)
     else:
         for p in projects:
             for c in p.get("clips", []):
-                fn = c.get("filename")
-                if fn and (OUTPUTS_DIR / fn).exists():
-                    target_files.append((OUTPUTS_DIR / fn, fn))
-                    target_clips.append(c)
+                target_clips.append(c)
+
+    if not target_clips:
+        for jid, j in JOBS.items():
+            for c in j.get("result", {}).get("clips", []):
+                target_clips.append(c)
                     
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for fpath, fname in target_files:
-            zf.write(fpath, arcname=fname)
-            # Add companion TikTok thumbnail image with exact same name (.jpg)
-            thumb_fn = Path(fname).stem + ".jpg"
-            thumb_path = OUTPUTS_DIR / thumb_fn
-            if not thumb_path.exists() and fpath.exists():
-                try:
-                    VideoRenderer().generate_thumbnail(str(fpath), str(thumb_path), timestamp_sec=1.0)
-                except Exception:
-                    pass
-            if thumb_path.exists():
-                zf.write(thumb_path, arcname=thumb_fn)
-        if target_clips:
-            add_session_docs_to_zip(zf, target_clips, session_title="ClipForge Session")
+        package_clips_into_zip(zf, target_clips, session_title="ClipForge Clips")
             
     buf.seek(0)
     return Response(
         content=buf.getvalue(),
         media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=clipforge_clips.zip"}
+        headers={"Content-Disposition": "attachment; filename=clipforge_clips_by_topic.zip"}
     )
 
 @app.get("/api/overview")
@@ -901,6 +1069,111 @@ async def suggest_b_roll_endpoint(payload: Dict[str, Any] = Body(...)):
     detector = ViralDetector()
     suggestions = detector.suggest_b_roll(transcript)
     return {"status": "success", "suggestions": suggestions}
+
+@app.post("/api/ai/research-clips")
+async def research_viral_clips_endpoint(payload: Dict[str, Any] = Body(...)):
+    """
+    AI Viral Clip Research Engine.
+    Searches an episode/video transcript using semantic natural language query
+    and viral angle archetypes (controversial, mindset, story, blueprint, reveal).
+    """
+    project_id = payload.get("project_id")
+    source = payload.get("source")
+    query = payload.get("query", "").strip()
+    archetype = payload.get("archetype", "all").strip().lower()
+    min_dur = float(payload.get("min_duration", 60.0))
+    max_dur = float(payload.get("max_duration", 90.0))
+    top_k = int(payload.get("top_k", 5))
+
+    segments = []
+    # 1. Check Project History
+    if project_id:
+        proj = HistoryManager.get_project_by_id(project_id)
+        if proj:
+            if proj.get("transcript_segments"):
+                segments = proj["transcript_segments"]
+            elif proj.get("clips"):
+                for c in proj["clips"]:
+                    if c.get("words"):
+                        segments.append({"words": c["words"], "text": c.get("full_transcript", c.get("hook", ""))})
+
+    # 2. Check active JOBS or cached transcription if source is provided
+    if not segments and source:
+        if source in JOBS and "result" in JOBS[source]:
+            res = JOBS[source]["result"]
+            segments = res.get("transcript_segments", [])
+        if not segments:
+            v_path = _resolve_video_source(source)
+            if v_path and v_path.exists():
+                cache_file = TEMP_DIR / f"{v_path.stem}_transcript.json"
+                if cache_file.exists():
+                    try:
+                        segments = json.loads(cache_file.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+
+    # 3. If still empty, search all recent clips or projects
+    if not segments:
+        all_projs = HistoryManager.get_all_projects()
+        if all_projs:
+            latest = HistoryManager.get_project_by_id(all_projs[0]["id"])
+            if latest and latest.get("transcript_segments"):
+                segments = latest["transcript_segments"]
+
+    detector = ViralDetector()
+    results = detector.research_viral_clips(
+        segments=segments,
+        query=query,
+        archetype=archetype,
+        min_seconds=min_dur,
+        max_seconds=max_dur,
+        top_k=top_k
+    )
+    return {"status": "success", "query": query, "archetype": archetype, "clips": results}
+
+@app.post("/api/ai/edit-copilot")
+async def ai_edit_copilot_endpoint(payload: Dict[str, Any] = Body(...)):
+    """
+    AI Natural Language Video Edit Copilot.
+    Takes clip state and creator instruction to suggest optimal hooks, titles, styles, and pacing.
+    """
+    clip_id = payload.get("clip_id")
+    instruction = payload.get("instruction", "").strip()
+    current_state = payload.get("current_state", {})
+
+    clip_data = dict(current_state)
+    if clip_id:
+        c = HistoryManager.get_clip_by_id(clip_id)
+        if c:
+            clip_data.update(c)
+
+    from core.ollama_manager import OllamaManager
+    ollama = OllamaManager.get_instance()
+    edits = ollama.ai_edit_copilot(clip_data, instruction)
+    return {"status": "success", "edits": edits}
+
+@app.post("/api/ai/social-kit")
+async def generate_social_kit_endpoint(payload: Dict[str, Any] = Body(...)):
+    """
+    Generates multi-platform publishing copy for TikTok, Instagram Reels, and YouTube Shorts.
+    """
+    clip_id = payload.get("clip_id")
+    transcript = payload.get("transcript", "")
+    title = payload.get("title", "")
+    hook = payload.get("hook", "")
+
+    if clip_id and (not transcript or not title):
+        c = HistoryManager.get_clip_by_id(clip_id)
+        if c:
+            title = title or c.get("title", "")
+            hook = hook or c.get("hook", "")
+            if not transcript and c.get("words"):
+                transcript = " ".join(w.get("word", "") for w in c["words"])
+
+    from core.ollama_manager import OllamaManager
+    ollama = OllamaManager.get_instance()
+    kit = ollama.generate_social_distribution_kit(transcript=transcript, title=title, hook=hook)
+    return {"status": "success", "social_kit": kit}
 
 @app.get("/api/system/status")
 async def get_system_status():
@@ -1351,6 +1624,330 @@ async def delete_project(project_id: str):
     success = HistoryManager.delete_project(project_id)
     return {"status": "success", "deleted_project_id": project_id}
 
+@app.get("/api/projects/{project_id}")
+async def get_project_details(project_id: str):
+    """Retrieves full project details including clips, source video path, and transcript segments for the timeline editor."""
+    proj = HistoryManager.get_project_by_id(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return proj
+
+@app.get("/api/projects/{project_id}/source-video")
+async def stream_project_source_video(project_id: str):
+    """Streams the full source video with byte-range support for smooth timeline seeking and playback."""
+    proj = HistoryManager.get_project_by_id(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    resolved_source = _resolve_video_source(project_id)
+    if not resolved_source:
+        raise HTTPException(status_code=404, detail="Source video file not found on disk")
+
+    return FileResponse(
+        path=str(resolved_source),
+        media_type="video/mp4",
+        filename=resolved_source.name
+    )
+
+@app.post("/api/projects/{project_id}/editor-state")
+async def save_editor_state(project_id: str, payload: Dict[str, Any] = Body(...)):
+    """Saves the complete editable studio project document for reopening."""
+    proj = HistoryManager.get_project_by_id(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    editor_project = payload.get("editor_project") or payload.get("project") or payload
+    if not isinstance(editor_project, dict):
+        raise HTTPException(status_code=400, detail="editor_project must be an object")
+
+    title = payload.get("title") or editor_project.get("title")
+    if not HistoryManager.save_editor_project(project_id, editor_project, title):
+        raise HTTPException(status_code=500, detail="Failed to persist editor state")
+    return {"status": "success", "saved_at": time.time(), "project": HistoryManager.get_project_by_id(project_id)}
+
+
+@app.post("/api/projects/{project_id}/apply-timeline-edits")
+async def apply_timeline_edits(project_id: str, payload: Dict[str, Any] = Body(...)):
+    """
+    Applies timeline edits: re-renders vertical clips from the source video
+    based on user-adjusted start/end points, updated titles, and hook captions.
+    Re-generates 3 viral thumbnails & docs per clip, updates DB, and returns updated project.
+    """
+    proj = HistoryManager.get_project_by_id(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    source_video = proj.get("source_video")
+    if not source_video or not Path(source_video).is_file():
+        for d in [UPLOADS_DIR, TEMP_DIR, OUTPUTS_DIR]:
+            matches = list(d.glob(f"*{project_id[:8]}*.mp4"))
+            for match in matches:
+                if match.is_file():
+                    source_video = str(match)
+                    break
+            if source_video and Path(source_video).is_file():
+                break
+    if not source_video or not Path(source_video).is_file():
+        raise HTTPException(status_code=404, detail="Source video file not found on disk")
+
+    editor_project = payload.get("editor_project") or payload.get("project")
+    raw_clips = payload.get("clips", [])
+    if editor_project and isinstance(editor_project, dict):
+        editor_clips = []
+        for track in editor_project.get("tracks", []):
+            for clip in track.get("clips", []):
+                timeline_start = float(clip.get("timelineStartSec", clip.get("timelineStart", 0.0)))
+                duration = float(clip.get("timelineDurationSec", clip.get("durationSec", clip.get("durationFrames", 0.0) / 30.0)))
+                source_in = float(clip.get("sourceInSec", clip.get("sourceInFrames", 0.0) / 30.0))
+                editor_clips.append({
+                    "id": clip.get("id"),
+                    "start": source_in,
+                    "end": source_in + duration,
+                    "title": clip.get("title") or clip.get("name") or "Viral Clip",
+                    "hook": clip.get("hook") or clip.get("title") or "",
+                    "subtitle_style": clip.get("subtitleStyle", "hormozi"),
+                    "layout_mode": clip.get("layoutMode", "speaker_focus"),
+                    "top_padding": clip.get("topPadding", 0),
+                    "bottom_padding": clip.get("bottomPadding", 0),
+                    "canvas_top_space": clip.get("canvasTopSpace", 450),
+                    "watermark": clip.get("watermark"),
+                    "virality_score": clip.get("viralityScore", 92),
+                })
+        if editor_clips:
+            raw_clips = editor_clips
+    if not raw_clips or not isinstance(raw_clips, list):
+        raise HTTPException(status_code=400, detail="No clips provided to render")
+
+    detector = ViralDetector()
+    tracker = SmartFaceTracker()
+    renderer = VideoRenderer()
+    segments = proj.get("transcript_segments", [])
+
+    rendered_clips = []
+
+    for idx, c_in in enumerate(raw_clips):
+        start_sec = max(0.0, float(c_in.get("start", c_in.get("start_sec", 0.0))))
+        end_sec = float(c_in.get("end", c_in.get("end_sec", start_sec + 30.0)))
+        if end_sec <= start_sec:
+            end_sec = start_sec + 30.0
+        duration = max(3.0, end_sec - start_sec)
+
+        raw_topic = c_in.get("title") or c_in.get("topic") or f"Viral Clip {idx + 1}"
+        safe_topic_name = sanitize_topic_filename(raw_topic)
+        hook_text = c_in.get("hook", "") or raw_topic
+        subtitle_style = c_in.get("subtitle_style", "hormozi")
+        layout_mode = c_in.get("layout_mode", "speaker_focus")
+        top_padding = float(c_in.get("top_padding", 0.0))
+        bottom_padding = float(c_in.get("bottom_padding", 0.0))
+        canvas_top_space = int(c_in.get("canvas_top_space", 450))
+        color_preset = c_in.get("color_preset", "none")
+        watermark_text = c_in.get("watermark", c_in.get("watermark_text"))
+        voice_clarifier = bool(c_in.get("voice_clarifier", True))
+
+        # Word alignment for subtitles
+        words = []
+        if c_in.get("words") and isinstance(c_in["words"], list) and len(c_in["words"]) > 0:
+            words = c_in["words"]
+        else:
+            matching_texts = []
+            for s in segments:
+                s_st = float(s.get("start", 0))
+                s_en = float(s.get("end", 0))
+                s_tx = s.get("text", "").strip()
+                if s_st <= end_sec and s_en >= start_sec and s_tx:
+                    matching_texts.append(s_tx)
+            full_text = " ".join(matching_texts) or hook_text or raw_topic
+            approx_words = full_text.split()
+            w_dur = duration / max(1, len(approx_words))
+            for i, w in enumerate(approx_words):
+                words.append({
+                    "word": w,
+                    "start": round(start_sec + i * w_dur, 2),
+                    "end": round(start_sec + (i + 0.9) * w_dur, 2)
+                })
+
+        # Calculate padding and spaces
+        top_pct = max(0.0, min(45.0, float(top_padding))) / 100.0
+        bottom_pct = max(0.0, min(45.0, float(bottom_padding))) / 100.0
+        if top_pct + bottom_pct > 0.80:
+            scale_pad = 0.80 / (top_pct + bottom_pct)
+            top_pct *= scale_pad
+            bottom_pct *= scale_pad
+        has_padding = (top_pct > 0 or bottom_pct > 0)
+        top_pad_px = int(round(1920 * top_pct))
+        bottom_pad_px = int(round(1920 * bottom_pct))
+        available_h = max(100, 1920 - top_pad_px - bottom_pad_px)
+        fit_top_space = max(top_pad_px, max(80, min(950, canvas_top_space))) if not has_padding else top_pad_px
+        fit_video_h = min(608, available_h)
+
+        crop_filter, actual_layout = tracker.build_layout_filter(
+            video_path=source_video,
+            start_sec=start_sec,
+            duration=duration,
+            layout_mode=layout_mode,
+            top_padding=top_padding,
+            bottom_padding=bottom_padding,
+            canvas_bg="solid_black",
+            target_w=1080,
+            target_h=1920,
+            enable_hook_zoom=False,
+            canvas_top_space=canvas_top_space
+        )
+
+        ass_path = TEMP_DIR / f"timeline_{project_id[:8]}_{idx}_{int(time.time())}.ass"
+        SubtitleGenerator.create_ass_file(
+            words=words,
+            output_path=ass_path,
+            style_key=subtitle_style,
+            words_per_batch=3,
+            clip_start_offset=start_sec,
+            clip_duration=duration,
+            topic_headline=hook_text,
+            show_headline_banner=bool(hook_text),
+            enable_auto_emojis=True,
+            layout_mode=actual_layout,
+            top_space=fit_top_space,
+            video_h=fit_video_h,
+            top_padding=top_padding,
+            bottom_padding=bottom_padding
+        )
+
+        # Output folder organization
+        clip_folder_name = f"Clip_{idx+1}_{safe_topic_name}"
+        clip_dir = OUTPUTS_DIR / clip_folder_name
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        out_filename = f"{safe_topic_name}.mp4"
+        folder_video_path = clip_dir / out_filename
+        flat_video_path = OUTPUTS_DIR / out_filename
+
+        rendered_path = renderer.render_clip(
+            video_path=source_video,
+            start_sec=start_sec,
+            duration=duration,
+            crop_filter=crop_filter,
+            ass_subtitle_path=str(ass_path),
+            output_filename=out_filename,
+            color_preset=color_preset,
+            watermark_text=watermark_text,
+            enable_voice_clarifier=voice_clarifier
+        )
+        if rendered_path.exists() and folder_video_path.resolve() != rendered_path.resolve():
+            try:
+                shutil.copy2(str(rendered_path), str(folder_video_path))
+            except Exception as cpy_err:
+                print(f"[Folder Video Warning] {cpy_err}")
+
+        # 3 Distinct High-Converting TikTok Thumbnails (Editorial, Red Alert, Authority Blueprint)
+        thumb_configs = [
+            ("thumb_1", "curiosity", "editorial_premium", "#FFE600", "Curiosity Editorial"),
+            ("thumb_2", "warning", "red_alert", "#EF4444", "Red Alert Warning"),
+            ("thumb_3", "formula", "podcast_authority", "#00E5FF", "Authority Blueprint")
+        ]
+        generated_covers = []
+        for t_suffix, t_arch, t_style, t_accent, t_label in thumb_configs:
+            t_filename = f"{safe_topic_name}_{t_suffix}.jpg"
+            t_folder_path = clip_dir / t_filename
+            t_flat_path = OUTPUTS_DIR / t_filename
+            try:
+                TikTokThumbnailDesigner.create_tiktok_thumbnail(
+                    video_path=str(rendered_path),
+                    output_jpg_path=str(t_folder_path),
+                    topic=raw_topic,
+                    title=raw_topic,
+                    hook=hook_text,
+                    transcript=" ".join(w.get("word", "") for w in words),
+                    crop_filter=crop_filter,
+                    source_clean_video=source_video,
+                    timestamp_sec=start_sec + min(2.0, max(0.8, duration * 0.2)),
+                    copy_data=None,
+                    style=t_style,
+                    accent_color=t_accent
+                )
+                if t_folder_path.exists():
+                    shutil.copy2(str(t_folder_path), str(t_flat_path))
+                    generated_covers.append(f"{clip_folder_name}/{t_filename}")
+            except Exception as t_err:
+                print(f"[Thumbnail Error] {t_label}: {t_err}")
+                try:
+                    renderer.generate_thumbnail(str(rendered_path), str(t_folder_path), timestamp_sec=1.0)
+                    if t_folder_path.exists():
+                        shutil.copy2(str(t_folder_path), str(t_flat_path))
+                        generated_covers.append(f"{clip_folder_name}/{t_filename}")
+                except Exception:
+                    pass
+
+        default_cover = generated_covers[0] if generated_covers else f"{safe_topic_name}.jpg"
+
+        # Generate Social Media Kit & Docs
+        part_info = f"Part {idx + 1}"
+        social_kit = detector.generate_social_kit(
+            title=raw_topic,
+            hook=hook_text,
+            transcript=" ".join(w.get("word", "") for w in words),
+            series_part=part_info
+        )
+        clip_data_for_docs = {
+            "topic": raw_topic,
+            "title": raw_topic,
+            "filename": out_filename,
+            "part_info": part_info,
+            "start_sec": start_sec,
+            "end_sec": end_sec,
+            "duration": round(duration, 2),
+            "hook": hook_text,
+            "social_kit": social_kit
+        }
+        try:
+            clip_docs_paths = create_clip_docs_files(clip_data_for_docs, output_dir=clip_dir, base_name=safe_topic_name)
+        except Exception as doc_err:
+            print(f"[Timeline Docs Warning] {doc_err}")
+            clip_docs_paths = {}
+
+        clip_id = c_in.get("id") or str(uuid.uuid4())
+        rendered_clips.append({
+            "id": clip_id,
+            "project_id": project_id,
+            "topic": raw_topic,
+            "title": raw_topic,
+            "hook": hook_text,
+            "virality_score": int(c_in.get("virality_score", 92)),
+            "narrative_breakdown": {
+                "hook_score": 92,
+                "story_score": 90,
+                "conclusion_score": 91
+            },
+            "start": start_sec,
+            "end": end_sec,
+            "start_sec": start_sec,
+            "end_sec": end_sec,
+            "duration": round(duration, 2),
+            "output_file": str(folder_video_path if folder_video_path.exists() else rendered_path),
+            "filename": out_filename,
+            "folder_name": clip_folder_name,
+            "folder_video": f"{clip_folder_name}/{safe_topic_name}.mp4",
+            "cover": default_cover,
+            "covers": generated_covers,
+            "docs_file": f"{clip_folder_name}/{safe_topic_name}_docs.docx",
+            "docs_paths": clip_docs_paths,
+            "part_info": part_info,
+            "series_id": project_id[:8],
+            "subtitle_style": subtitle_style,
+            "layout_mode": actual_layout,
+            "top_padding": float(top_padding),
+            "bottom_padding": float(bottom_padding),
+            "social_kit": social_kit,
+            "words": words
+        })
+
+    # Save to database
+    if payload.get("editor_project") or payload.get("project"):
+        submitted_project = payload.get("editor_project") or payload.get("project")
+        if isinstance(submitted_project, dict):
+            HistoryManager.save_editor_project(project_id, submitted_project, submitted_project.get("title"))
+    HistoryManager.replace_project_clips(project_id, rendered_clips)
+    updated_project = HistoryManager.get_project_by_id(project_id)
+    return {"status": "success", "project": updated_project, "clips": rendered_clips}
+
 @app.delete("/api/clips/{clip_id}")
 async def delete_clip(clip_id: str):
     """Deletes a single clip and its video file."""
@@ -1402,7 +1999,7 @@ async def stream_video(filename: str):
 
 @app.get("/api/projects/{project_id}/download-zip")
 async def download_project_zip(project_id: str):
-    """Downloads all generated 9:16 vertical clips for a project in a single ZIP file with docs file included."""
+    """Downloads all generated 9:16 vertical clips for a project organized in separate topic folders with 3 viral thumbnails & docs."""
     all_projects = HistoryManager.get_all_projects()
     project = next((p for p in all_projects if p["id"] == project_id), None)
     if not project or not project.get("clips"):
@@ -1413,25 +2010,8 @@ async def download_project_zip(project_id: str):
     filename = f"{safe_title}_all_clips.zip"
     zip_path = TEMP_DIR / f"{project_id}_{filename}"
 
-    with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_STORED) as zf:
-        for clip in project["clips"]:
-            fn = clip.get("filename")
-            if fn:
-                clip_path = OUTPUTS_DIR / fn
-                if clip_path.exists():
-                    zf.write(clip_path, arcname=fn)
-                    # Add companion TikTok thumbnail image with exact same name (.jpg)
-                    thumb_fn = Path(fn).stem + ".jpg"
-                    thumb_path = OUTPUTS_DIR / thumb_fn
-                    if not thumb_path.exists():
-                        try:
-                            VideoRenderer().generate_thumbnail(str(clip_path), str(thumb_path), timestamp_sec=1.0)
-                        except Exception:
-                            pass
-                    if thumb_path.exists():
-                        zf.write(thumb_path, arcname=thumb_fn)
-        # Add docs files (.docx, .txt, .md) with topic, title, hashtags for all videos
-        add_session_docs_to_zip(zf, project["clips"], session_title=raw_title)
+    with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        package_clips_into_zip(zf, project["clips"], session_title=raw_title)
 
     return FileResponse(
         path=str(zip_path),
@@ -1441,7 +2021,7 @@ async def download_project_zip(project_id: str):
 
 @app.get("/api/jobs/{job_id}/download-zip")
 async def download_job_zip(job_id: str):
-    """Downloads all clips generated in active job session as a single ZIP with docs and TikTok thumbnail images included."""
+    """Downloads all clips generated in active job session organized in separate topic folders with 3 viral thumbnails & docs."""
     if job_id not in JOBS or not JOBS[job_id].get("result"):
         raise HTTPException(status_code=404, detail="Job or clips not found")
 
@@ -1453,25 +2033,8 @@ async def download_job_zip(job_id: str):
     filename = f"{session_name}_all_clips.zip"
     zip_path = TEMP_DIR / f"{job_id}_{filename}"
 
-    with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_STORED) as zf:
-        for clip in clips:
-            fn = clip.get("filename")
-            if fn:
-                clip_path = OUTPUTS_DIR / fn
-                if clip_path.exists():
-                    zf.write(clip_path, arcname=fn)
-                    # Add companion TikTok thumbnail image with exact same name (.jpg)
-                    thumb_fn = Path(fn).stem + ".jpg"
-                    thumb_path = OUTPUTS_DIR / thumb_fn
-                    if not thumb_path.exists():
-                        try:
-                            VideoRenderer().generate_thumbnail(str(clip_path), str(thumb_path), timestamp_sec=1.0)
-                        except Exception:
-                            pass
-                    if thumb_path.exists():
-                        zf.write(thumb_path, arcname=thumb_fn)
-        # Add docs files (.docx, .txt, .md) with topic, title, hashtags for all videos
-        add_session_docs_to_zip(zf, clips, session_title=session_name)
+    with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        package_clips_into_zip(zf, clips, session_title=session_name)
 
     return FileResponse(
         path=str(zip_path),
@@ -1549,7 +2112,7 @@ async def trim_clip(req: TrimClipRequest):
         raise HTTPException(status_code=404, detail="Clip not found in history")
 
     source_video = clip.get("source_video")
-    if not source_video or not Path(source_video).exists():
+    if not source_video or not Path(source_video).is_file():
         # Fallback: check UPLOADS_DIR for matching project files
         possible = list(UPLOADS_DIR.glob(f"*{clip.get('project_id', '')}*"))
         if possible:
@@ -1667,7 +2230,7 @@ async def reburn_clip_subtitles(payload: Dict[str, Any] = Body(...)):
         raise HTTPException(status_code=404, detail="Clip not found in history.")
 
     source_video = clip.get("source_video")
-    if not source_video or not Path(source_video).exists():
+    if not source_video or not Path(source_video).is_file():
         raise HTTPException(status_code=400, detail="Original source video not found on disk for re-burn.")
 
     start_sec = float(clip.get("start_sec", 0.0))
@@ -1845,10 +2408,11 @@ async def extract_custom_clip(payload: Dict[str, Any] = Body(...)):
     duration = max(3.0, end_sec - start_sec)
 
     proj = HistoryManager.get_project_by_id(project_id)
-    if not proj or not proj.get("source_video") or not Path(proj["source_video"]).exists():
+    resolved_source = _resolve_video_source(project_id)
+    if not proj or not resolved_source:
         raise HTTPException(status_code=404, detail="Source video not found for this project.")
 
-    source_video = proj["source_video"]
+    source_video = str(resolved_source)
     clip_id = f"{project_id}_custom_{int(start_sec)}_{int(time.time())}"
 
     segments = proj.get("transcript_segments", [])
@@ -2095,6 +2659,35 @@ async def regenerate_clip_thumbnail(clip_id: str, payload: Dict[str, Any] = Body
         "accent_color": accent_color,
         "timestamp_sec": timestamp_sec,
         "copy_data": copy_data
+    }
+
+
+@app.post("/api/clips/{clip_id}/set-cover")
+async def set_active_clip_cover(clip_id: str, payload: Dict[str, Any] = Body(...)):
+    """Sets the chosen cover thumbnail as the default primary cover for the clip."""
+    cover_file = payload.get("cover")
+    if not cover_file:
+        raise HTTPException(status_code=400, detail="Cover filename is required")
+
+    clip = HistoryManager.get_clip_by_id(clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found")
+
+    HistoryManager.update_clip(clip_id, {"cover": cover_file})
+
+    # Also update in active JOBS cache if present
+    for jid, job in JOBS.items():
+        if job.get("result") and job["result"].get("clips"):
+            for c in job["result"]["clips"]:
+                if c.get("id") == clip_id:
+                    c["cover"] = cover_file
+
+    project_id = clip.get("project_id", "")
+    return {
+        "status": "success",
+        "clip_id": clip_id,
+        "cover": cover_file,
+        "thumbnail_url": f"/media/{project_id}/{cover_file}?t={int(time.time())}"
     }
 
 

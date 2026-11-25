@@ -342,23 +342,192 @@ class OllamaManager:
         lower = transcript.lower()
 
         cues = [
-            ({"money", "wealth", "cash", "million", "dollar", "profit"}, "B-ROLL: Cash Stacks & Growth Chart", "SFX: Cash Register Ding 💰"),
-            ({"secret", "mistake", "wrong", "danger", "warning", "fail"}, "B-ROLL: Dramatic Warning Flash", "SFX: Deep Bass Drop / Record Scratch ⚠️"),
-            ({"growth", "scale", "launch", "fast", "huge", "win"}, "B-ROLL: Rocket Launch / High Speed Timelapse", "SFX: Whoosh / Sonic Boom 🚀"),
-            ({"think", "brain", "idea", "realize", "smart", "psychology"}, "B-ROLL: Neural Synapse Animation", "SFX: Lightbulb Ping 💡"),
-            ({"stop", "never", "ruin", "crisis", "worst"}, "B-ROLL: Stop Sign / Red Screen Flash", "SFX: Error Buzzer 🛑")
+            ({"money", "wealth", "cash", "million", "dollar", "profit", "income"}, "B-ROLL: Cash Stacks & Stock Chart", "SFX: Cash Register Ding 💰", "money stock market chart 4k"),
+            ({"secret", "mistake", "wrong", "danger", "warning", "fail", "costly"}, "B-ROLL: Dramatic Warning Flash", "SFX: Deep Bass Drop / Record Scratch ⚠️", "caution warning sign dark cinematic"),
+            ({"growth", "scale", "launch", "fast", "huge", "win", "10x"}, "B-ROLL: Rocket Launch / High Speed City", "SFX: Whoosh / Sonic Boom 🚀", "rocket launch cinematic timelapse"),
+            ({"think", "brain", "idea", "realize", "smart", "psychology", "mind"}, "B-ROLL: 3D Neural Synapses Firing", "SFX: Lightbulb Ping 💡", "brain neural network glowing"),
+            ({"stop", "never", "ruin", "crisis", "worst", "quit"}, "B-ROLL: Stop Sign / Red Screen Flash", "SFX: Error Buzzer 🛑", "red stop alert cinematic overlay"),
+            ({"body", "workout", "muscle", "health", "diet", "gym"}, "B-ROLL: High-Intensity Workout", "SFX: Heartbeat Thump 🫀", "gym athlete heavy training cinematic")
         ]
 
-        for word_set, b_roll, sfx in cues:
+        for word_set, b_roll, sfx, search_query in cues:
             matched = [w for w in word_set if w in lower]
             if matched:
                 suggestions.append({
                     "trigger_words": matched,
                     "b_roll_suggestion": b_roll,
-                    "sfx_cue": sfx
+                    "sfx_cue": sfx,
+                    "stock_search_query": search_query,
+                    "overlay_motion": "zoom_in" if "Launch" in b_roll or "Cash" in b_roll else "slow_pan"
                 })
 
         return suggestions[:4]
+
+    def ai_edit_copilot(self, clip_data: Dict[str, Any], instruction: str) -> Dict[str, Any]:
+        """
+        AI Natural Language Video Edit Copilot.
+        Allows creators to command the AI editor in plain English:
+        - "Make the hook punchier and focus on money"
+        - "Change subtitle style to MrBeast and boost virality"
+        - "Add high-converting controversy"
+        Returns structured edits ready to be applied instantly.
+        """
+        curr_title = str(clip_data.get("title", "")).strip()
+        curr_hook = str(clip_data.get("hook", "")).strip()
+        transcript = str(clip_data.get("full_transcript", curr_hook))[:1000]
+
+        # 1. Try local Ollama if connected
+        prompt = f"""You are an elite AI Video Editor and Short-Form Director.
+Creator Instruction: "{instruction}"
+
+Current Clip State:
+- Title / Headline: {curr_title}
+- Opening Hook: {curr_hook}
+- Transcript snippet: {transcript}
+
+Based on the creator's instruction, optimize this clip for maximum TikTok/Reels retention and viral CTR.
+Respond with ONLY a raw JSON object matching this schema:
+{{
+  "updated_title": "PUNCHY 6 TO 12 WORD TOPIC HEADLINE IN ALL CAPS",
+  "updated_hook": "Refined opening spoken hook sentence...",
+  "suggested_subtitle_style": "hormozi",
+  "suggested_layout": "fit_canvas",
+  "headline_white": "LINE 1 WHITE WORDS",
+  "headline_yellow": "LINE 2 YELLOW PUNCH WORDS",
+  "hashtags": ["#podcast", "#viral", "#growth", "#motivation", "#mindset"],
+  "explanation": "Why this edit boosts retention and viral distribution."
+}}
+"""
+        resp = self.generate(prompt=prompt, system_prompt="You are an expert short-form video editor that outputs raw JSON.", timeout=6.0)
+        if resp:
+            try:
+                clean = resp.replace("```json", "").replace("```", "").strip()
+                data = json.loads(clean)
+                if data.get("updated_title"):
+                    return {
+                        "updated_title": str(data.get("updated_title")).upper().strip(),
+                        "updated_hook": str(data.get("updated_hook", curr_hook)).strip(),
+                        "suggested_subtitle_style": str(data.get("suggested_subtitle_style", "hormozi")),
+                        "suggested_layout": str(data.get("suggested_layout", "fit_canvas")),
+                        "headline_white": str(data.get("headline_white", "THE REAL REASON")).upper(),
+                        "headline_yellow": str(data.get("headline_yellow", "99% FAIL")).upper(),
+                        "hashtags": data.get("hashtags", ["#viral", "#podcast", "#shorts"]),
+                        "explanation": str(data.get("explanation", "AI optimized hook and pacing for high retention."))
+                    }
+            except Exception:
+                pass
+
+        # 2. Robust NLP Heuristic Fallback
+        ins_lower = instruction.lower()
+        new_title = curr_title
+        new_hook = curr_hook
+        suggested_style = "hormozi"
+        suggested_layout = clip_data.get("layout_mode", "fit_canvas")
+
+        if any(w in ins_lower for w in ["mrbeast", "hype", "energy", "fast"]):
+            suggested_style = "hype"
+        elif any(w in ins_lower for w in ["cyber", "neon", "glow", "tech"]):
+            suggested_style = "cyber"
+        elif any(w in ins_lower for w in ["clean", "amber", "editorial", "minimal"]):
+            suggested_style = "clean"
+
+        if "controversy" in ins_lower or "warning" in ins_lower:
+            new_title = f"WHY 99% OF PEOPLE ARE COMPLETELY WRONG ABOUT {curr_title.split(':')[-1].strip()}"
+        elif "money" in ins_lower or "wealth" in ins_lower:
+            new_title = f"HOW TO BUILD WEALTH AND 10X YOUR INCOME IN 2024"
+        elif "punchy" in ins_lower or "hook" in ins_lower:
+            new_title = f"THE REAL REASON NOBODY TALKS ABOUT {curr_title.split(':')[-1].strip()}"
+        else:
+            new_title = f"THE UNTOLD TRUTH ABOUT {curr_title.split(':')[-1].strip()}"
+
+        words = new_title.split()
+        half = max(1, len(words) // 2)
+        hw = " ".join(words[:half])
+        hy = " ".join(words[half:])
+
+        return {
+            "updated_title": new_title.upper(),
+            "updated_hook": new_hook,
+            "suggested_subtitle_style": suggested_style,
+            "suggested_layout": suggested_layout,
+            "headline_white": hw,
+            "headline_yellow": hy,
+            "hashtags": ["#podcast", "#mindset", "#success", "#viral", "#tiktoktips"],
+            "explanation": f"Applied '{instruction}' optimization: updated headline, two-tone color highlights, and tuned subtitle pacing."
+        }
+
+    def generate_social_distribution_kit(self, transcript: str, title: str = "", hook: str = "") -> Dict[str, Any]:
+        """
+        Generates platform-tailored social copy for TikTok, Instagram Reels, and YouTube Shorts.
+        Includes high-CTR captions, search keywords, hashtags, and posting schedule.
+        """
+        clean_title = (title or "Viral Podcast Insight").strip().title()
+        clean_hook = (hook or transcript[:80]).strip()
+
+        # 1. Try Ollama if connected
+        prompt = f"""You are a master social media manager distributing viral short-form clips.
+Title: {clean_title}
+Hook: {clean_hook}
+Transcript: {transcript[:800]}
+
+Generate a complete, high-converting social publishing kit for TikTok, Instagram Reels, and YouTube Shorts.
+Respond ONLY with a JSON object matching this schema:
+{{
+  "tiktok": {{
+    "caption": "Catchy first 2 lines with curiosity gap...",
+    "seo_keywords": ["keyword 1", "keyword 2", "keyword 3"],
+    "hashtags": ["#podcast", "#viral", "#foryou"],
+    "pinned_comment": "Question to spark comment debates..."
+  }},
+  "instagram": {{
+    "caption": "Punchy hook + bullet points + Call to Action...",
+    "carousel_points": ["1. Key insight", "2. What to avoid", "3. Action step"],
+    "call_to_action": "Save this reel for later 📌",
+    "hashtags": ["#reels", "#growth", "#explorepage"]
+  }},
+  "youtube_shorts": {{
+    "title": "Title with emoji and #Shorts",
+    "description": "Engaging description with timestamps...",
+    "tags": ["Shorts", "podcast", "advice"]
+  }},
+  "best_posting_times": ["12:30 PM EST", "6:45 PM EST", "9:15 PM EST"]
+}}
+"""
+        resp = self.generate(prompt=prompt, system_prompt="You are a JSON-only API that outputs social media distribution kits.", timeout=6.0)
+        if resp:
+            try:
+                clean = resp.replace("```json", "").replace("```", "").strip()
+                data = json.loads(clean)
+                if data.get("tiktok") and data.get("instagram"):
+                    return data
+            except Exception:
+                pass
+
+        # 2. Heuristic fallback
+        return {
+            "tiktok": {
+                "caption": f"Wait until the end... The brutal truth about {clean_title.lower()} nobody wants to admit. 👇",
+                "seo_keywords": [clean_title.lower(), "podcast clips", "life advice", "success habits"],
+                "hashtags": ["#podcast", "#viral", "#foryou", "#mindset", "#lifelessons"],
+                "pinned_comment": "Do you agree with this? Let me know in the comments below! 👇"
+            },
+            "instagram": {
+                "caption": f"\"{clean_hook}\"\n\nMost people get {clean_title.lower()} completely backwards. Here is the shift you need to make:\n\n• Stop relying on motivation alone\n• Build systems that remove friction\n• Protect your focus at all costs\n\nSave this for when you need a reminder 📌",
+                "carousel_points": [
+                    f"1. The misconception around {clean_title.lower()}",
+                    "2. The psychological bottleneck",
+                    "3. The proven execution framework"
+                ],
+                "call_to_action": "Share this with someone who needs to hear it today ↗️",
+                "hashtags": ["#reels", "#podcast", "#personaldevelopment", "#discipline", "#explorepage"]
+            },
+            "youtube_shorts": {
+                "title": f"The Untold Truth About {clean_title} 🤯 #Shorts",
+                "description": f"\"{clean_hook}\"\n\nSubscribe for daily podcast highlights and transformative insights.\n\n#Shorts #Podcast #SelfImprovement",
+                "tags": ["Shorts", "podcast clips", "interview", clean_title.lower(), "motivation"]
+            },
+            "best_posting_times": ["12:00 PM EST", "5:30 PM EST", "8:15 PM EST"]
+        }
 
     def _heuristic_podcast_summary(self, transcript: str, duration: float) -> Dict[str, Any]:
         """Deterministic offline fallback summary generator."""
